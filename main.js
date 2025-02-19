@@ -227,6 +227,8 @@ document.addEventListener("keydown", function (e) {
                 changeFractal(fractalType === 1 ? 16 : fractalType - 1)
             } else if (code === 68) {
                 changeDarkenEffect(darkenEffect === 0 ? 3 : darkenEffect - 1)
+            } else if (code === 77) {
+                switchRenderMode(true)
             } else if (code === 83) {
                 decreaseSpeed()
             }
@@ -501,7 +503,7 @@ function update() {
     } else {
         line.removeAttribute("style")
         if (flowRate !== 0) {
-            flowAmount += flowRate / 60
+            flowAmount += flowRate / 120
             if (flowAmount < 0) {
                 flowAmount += palleteLen
             } else if (flowAmount >= palleteLen) {
@@ -815,7 +817,7 @@ function switchPallete() {
     interior = interiors[palleteID]
     palleteLen = pallete.length - 1
     palleteData.set(pallete)
-    retry()
+    requestRender()
 }
 
 function customizePallete() {
@@ -879,9 +881,13 @@ function decodePallete(colors) {
     return newColors
 }
 
-function switchRenderMode() {
-    renderMode = renderMode === 2 ? 0 : renderMode + 1
-    colorButton(2, renderMode * 0.6)
+function switchRenderMode(reverse) {
+    if (reverse) {
+        renderMode = renderMode === 0 ? 3 : renderMode - 1
+    } else {
+        renderMode = renderMode === 3 ? 0 : renderMode + 1
+    }
+    colorButton(2, renderMode * 0.35)
     requestRender()
 }
 
@@ -1156,7 +1162,7 @@ function loadInfo() {
 }
 
 // Color the buttons as needed
-colorButton(2, renderMode * 0.6)
+colorButton(2, renderMode * 0.35)
 colorButton(3, darkenEffect / 3)
 colorButton(4, aliasingFactor * 3 - 3)
 colorButton(5, flowRate / 6 + 0.5)

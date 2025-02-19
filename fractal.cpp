@@ -78,8 +78,9 @@ uint32_t getPallete(float position, uint32_t *pallete, int length,
   // letters (#a00a0a for the first one, for example)
   int id = (int)position % length;
   float mod = position - ((int)position / length) * length - (float)id;
+  uint32_t color;
   if (renderMode == 1) {
-    uint32_t color = mix(pallete[id], pallete[id + 1], mod * sqrtf(mod) * 255);
+    color = mix(pallete[id], pallete[id + 1], mod * sqrtf(mod) * 255);
     // Incredibly complicated, right?
     int newColor = toRGB(45.0f + 0.8f * getR(color), 45.0f + 0.8f * getG(color),
                          45.0f + 0.8f * getB(color));
@@ -134,10 +135,8 @@ uint32_t getPallete(float position, uint32_t *pallete, int length,
         color = newColor;
       }
     }
-    return mixBlack(color, 200.0f * darkenAmount);
   } else if (renderMode == 2) {
-    uint32_t color =
-        mix(pallete[id], pallete[id + 1], mod * sqrtf(mod) * 255.0f);
+    color = mix(pallete[id], pallete[id + 1], mod * 255.0f);
     float sectionF = mod * 5.0f;
     int section = (int)sectionF;
     float mod2 = sectionF - (int)sectionF;
@@ -153,9 +152,24 @@ uint32_t getPallete(float position, uint32_t *pallete, int length,
         color = mixBlack(color, 2500.0f * mod2 - 1000.0f);
       }
     }
-    return mixBlack(color, 200.0f * darkenAmount);
+  } else if (renderMode == 3) {
+    uint32_t p1 = pallete[id];
+    uint32_t p2 = pallete[id + 1];
+    color = mix(p1, p2, mod * 255.0f);
+    float sectionF = mod * 3.0f;
+    int section = (int)sectionF;
+    float mod2 = sectionF - (int)sectionF;
+
+    if (mod2 > 0.3f && mod2 < 0.7f) {
+      if (mod2 < 0.5f) {
+        color = mix(color, p1, (mod2 - 0.3f) * 1275.0f);
+      } else {
+        color = mix(color, p2, (mod2 - 0.5f) * 1275.0f);
+      }
+    }
+  } else {
+    color = mix(pallete[id], pallete[id + 1], mod * 255.0f);
   }
-  uint32_t color = mix(pallete[id], pallete[id + 1], mod * 255.0f);
   return mixBlack(color, 200.0f * darkenAmount);
 }
 
@@ -405,8 +419,8 @@ float prmb(int iterations, double x, double y, double cx, double cy) {
   double si = i * i;
   for (int n = 1; n <= iterations; n++) {
     double tr = 2.0 * r * i;
-    r = absD(sr - i * i + x);
-    i = -tr - y;
+    r = absD(sr - i * i + cx);
+    i = -tr - cy;
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
