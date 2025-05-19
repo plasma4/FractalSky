@@ -63,9 +63,6 @@ static inline uint32_t getB(uint32_t color) { return (color >> 16) & 0xff; }
 // rendering mode
 static uint32_t mix2(uint32_t colorStart, uint32_t colorEnd, float a,
                      int renderMode, float darkenAmount) {
-  if (renderMode == 0) {
-    uint32_t color = mix(colorStart, colorEnd, a * darkenAmount * 255);
-  }
   uint32_t color = mix(colorStart, colorEnd, (a * sqrt(a)) * 255);
   return mixBlack(color, 200 * darkenAmount);
 }
