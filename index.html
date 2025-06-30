@@ -2,20 +2,26 @@
 <html lang="en">
 
 <head>
-    <!-- More info and code at https://github.com/plasma4/FractalSky; all code under AGPL v3. -->
+    <!-- All the code and documentation is at https://github.com/plasma4/FractalSky; all code under AGPL v3, including the .cpp code used; main.js and worker.js are the JS sections. -->
     <title>FractalSky</title>
     <meta charset="utf-8">
 
     <meta name="viewport" content="user-scalable=no">
     <script src="main.js" defer></script>
+    <link rel="manifest" href="manifest.json">
 
     <style>
         * {
             font-size: 24px;
             font-family: Cambria, Cochin, Georgia;
             touch-action: manipulation;
+            color: black;
             overflow: hidden;
             user-select: none;
+        }
+
+        small {
+            font-size: 0.6em;
         }
 
         .scroll {
@@ -184,10 +190,14 @@
             height: 100%;
         }
 
-        .legal,
+        .bottom,
         #help {
             font-size: 14px;
             font-family: "Gill Sans", Calibri, Tahoma;
+        }
+
+        .bottom {
+            margin: 4px;
         }
 
         #help {
@@ -199,10 +209,6 @@
             left: 0;
             width: 100%;
             height: 100%;
-        }
-
-        .legal {
-            margin: 4px;
         }
 
         body {
@@ -267,6 +273,11 @@
 
         a {
             color: #2cb4f3;
+            font-size: inherit;
+        }
+
+        b {
+            font-size: inherit;
         }
 
         #infoClose {
@@ -300,7 +311,9 @@
     <div id="welcome">
         <div id="noteTitle">Welcome!</div>
         <div id="noteContent">
-            This fractal viewer offers professional features like custom palettes, unique coloring, and more! Click here to learn how to use it. Click <span onclick="loadInfo()" class="choice">here</span> to learn about each option.
+            This fractal viewer offers professional features like custom palettes, unique coloring, and more! Click here
+            to learn how to use it. Click <span onclick="loadInfo()" class="choice">here</span> to learn about each
+            option.
             Use the "More..." button to observe the options and shortcuts. (It might take a bit of time to get used to!)
             <div id="notice">Hope you enjoy.</div>
         </div>
@@ -326,7 +339,7 @@
             or hex values (for hex values, the # symbol is optional) should be separated by
             spaces. They should only contain 3 numbers (for example, black would be written as
             <span style="color: black; font-size: 16px;">0,0,0</span>). The last color is the interior color.
-            Maximum of 2,000 colors.
+            Maximum of 25,000 colors.
         </span>
         <br>
         <input type="text" placeholder="Enter RGB values..." id="newPallete"
@@ -343,9 +356,15 @@
         <button onclick="wantedFPS = 10.5">10FPS</button>
         <br><br>
         <div id="left">
-            <div class="legal">
+            <div class="bottom">
+                Under normal circumstances, this fractal viewer will work offline and use multiple cores.
                 This fractal viewer was made by Leo Zhang.
-                It is licensed under the GNU Affero General Public License v3 in case you want to use it! All rights reserved.
+                It is licensed under the GNU Affero General Public License v3 in case you want to use it! All rights
+                reserved.
+                <br>
+                This fractal viewer allows you to specify more memory by adding ?maxMemory=4096 to the end of the URL
+                and custom worker amounts by adding ?workers=8 (change the numbers as you need). Usually, you would want
+                1 worker for each core; your computer or browser believes <b id="hardwareWorkers">?</b> is ideal.
             </div>
         </div>
         <button onclick="closeMenu()" id="close">Close <b>(Space)</b></button>
@@ -353,36 +372,50 @@
     <div class="sheet scroll" id="help" style="background-color: #fff; opacity: 0.9">
         Hi there!
         <br>
-        This online fractal viewer currently supports automatic multithreading, normal map shading, unique banding modes, basic pallete animation, anti-aliasing, coordinate saving, and more!
+        This online fractal viewer currently supports automatic multithreading, normal map shading, unique banding
+        modes, basic pallete animation, anti-aliasing, coordinate saving, and more!
         <hr>
-        <b>The colors give you a visual indicator for the options you've selected. Make sure to export your location locally before closing the tab!</b>
+        <b>The colors give you a visual indicator for the options you've selected. Make sure to export your location
+            locally before closing the tab!</b>
         <hr>
-        If an option is reversable, it means that you can use the shortcut and combine it with the Shift key to move it backwards.
+        If an option is reversable, it means that you can use the shortcut and combine it with the Shift key to move it
+        backwards.
         <hr>
         Note that you can access the More... tab with the Space key easily.
         <br>
-        <b>Switch Fractal</b> (reversable): Switches the type of fractal. There are many types, so try to give them all a try!
+        <b>Switch Fractal</b> (reversable): Switches the type of fractal. There are many types, so try to give them all
+        a try!
         <br>
         <b>Switch Render Mode</b> (reversable, partially complete): Switches how the pallete is rendered.
         <br>
-        <b>Switch Darken Effect</b> (reversable, not complete): For some fractals, this creates a shading effect. For other fractals, you won't see a shading effect. There is an additional mode as well that isn't directly shading; try it on the default fractal (the Mandelbrot set) first and then on the fractal of your choice to see how it interacts.
+        <b>Switch Darken Effect</b> (reversable, not complete): For some fractals, this creates a shading effect. For
+        other fractals, you won't see a shading effect. There is an additional mode as well that isn't directly shading;
+        try it on the default fractal (the Mandelbrot set) first and then on the fractal of your choice to see how it
+        interacts.
         <br><br>
-        <b>Switch Anti-Aliasing Mode</b>: Modifies the Anti-Aliasing factor. If the factor is greater than 1, the fractal may appear smoother at the cost of some more compute time (does not work with Download Image).
+        <b>Switch Anti-Aliasing Mode</b>: Modifies the Anti-Aliasing factor. If the factor is greater than 1, the
+        fractal may appear smoother at the cost of some more compute time (may have weird interactions with
+        downloading).
         <br>
-        <b>Flow Colors Forward/Backward</b>: Animation effect that occurs once render finishes, making the colors cycle. Each option can be pressed multiple times to increase or decrease this flow rate. (This can be laggy when viewed at high resolutions/pixel densities!)
+        <b>Flow Colors Forward/Backward</b>: Animation effect that occurs once render finishes, making the colors cycle.
+        Each option can be pressed multiple times to increase or decrease this flow rate. (This can be laggy when viewed
+        at high resolutions/pixel densities!)
         <br>
         <b>Switch Pallete</b>: Changes the pallete to another pre-selected pallete option.
         <br>
-        <b>Increase/Decrease Pallete Change</b>: Increase or decrease how rapidly the colors cycle through the pallete; not the animation. Each option can be pressed multiple times to increase or decrease this pallete change.
+        <b>Increase/Decrease Pallete Change</b>: Increase or decrease how rapidly the colors cycle through the pallete;
+        not the animation. Each option can be pressed multiple times to increase or decrease this pallete change.
         <br><br>
-        <b>Switch Fractal Category</b>: Switches the category of the fractal (Multibrot, power of Burning Ship, custom fractals).
+        <b>Switch Fractal Category</b>: Switches the category of the fractal (Multibrot, power of Burning Ship, custom
+        fractals).
         <br>
-        <b>Increase Iterations</b>: Increase the maximum number of iterations before assuming that a point never escapes.
+        <b>Increase Iterations</b>: Increase the maximum number of iterations before assuming that a point never
+        escapes.
         <br>
         <b>Toggle Pixel Breakdown</b>: Show more info about a specific point.
         <hr>
         Enjoy and feel free to play around! Some features might not be complete yet.
-        <div class="legal">
+        <div class="bottom">
             Copyright 2025 Leo Zhang. View the code <a href="https://github.com/plasma4/FractalSky">here</a>!
         </div>
         <hr>

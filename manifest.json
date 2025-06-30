@@ -1,0 +1,9 @@
+{
+  "name": "FractalSky",
+  "short_name": "FractalSky",
+  "description": "A high quality fractal viewer built for the web.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#222222",
+  "theme_color": "#6b5e5d"
+}

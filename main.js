@@ -1,15 +1,38 @@
 "use strict"
+// All the code and documentation is at https://github.com/plasma4/FractalSky; all code under AGPL v3, including the .cpp code used; main.js and worker.js are the JS sections.
 const help = document.getElementById("help")
+var useSharedWebWorkers = crossOriginIsolated
 // Cross origin stuff is pretty weird
-if (!crossOriginIsolated) {
+if (!window.WebAssembly || !WebAssembly.instantiateStreaming) {
     help.style.display = "unset"
-    help.innerHTML = 'Unfortunately, this fractal viewer won\'t work here. Go to the <a href="https://fractalsky.netlify.app/">working edition</a> to use it!<hr><small>(Using a local copy? You\'ll need make sure it is properly Cross-Origin Isolated, so check the console for more info. If you can\'t do that then you can always mess with the <a href="https://plasma4.github.io/my-site/fractalold.html">old version</a>.)</small><br><button onclick="help.removeAttribute(\'style\')" id="infoClose">Close</button>'
-    throw new TypeError("Unfortunately, this website does not work if it is not Cross-Origin Isolated, as it uses SharedArrayBuffer to communicate between workers and to allow the WebAssembly script to work using the same memory addresses. The Cross-Origin-Opener-Policy should be set to same-origin, and the Cross-Origin-Embedder-Policy should be set to require-corp. If you can't figure out how to do so, you can try to use an online web hoster that allows you to modify headers (say, with .htaccess) or use a properly set up localhost with updated headers. Check https://github.com/plasma4/FractalSky for info on how to set this up.")
+    help.innerHTML = 'WebAssembly appears to be disabled currenly, so unfortunately, the program cannot function. Perhaps you are using a strict browser or have disabled it?<br><button onclick="help.removeAttribute(\'style\')" id="infoClose">Close</button>'
+    throw new Error("WebAssembly is not supported. ):")
+} else if (!useSharedWebWorkers) {
+    document.getElementById("noteContent").innerHTML += 'Unfortunately, this fractal viewer will only use a single core. You may have disabled shared web worker technology; check the console log for more info.'
+    console.warn("The fractal viewer will only use a single worker, as it normally uses SharedArrayBuffer to communicate between multiple workers and to allow the WebAssembly script to work using the same memory addresses. The Cross-Origin-Opener-Policy should be set to same-origin, and the Cross-Origin-Embedder-Policy should be set to require-corp. If you can't figure out how to do so, you can try to use an online web hoster that allows you to modify headers (say, with .htaccess) or use a properly set up localhost with updated headers. Check https://github.com/plasma4/FractalSky for info on how to set this up. Normally, https://fractalsky.netlify.app/ would work.")
 }
 // Set the timeout so there's no trace and so it takes up the most space
 setTimeout(console.log, 4, "%cOpening the inspector could activate debugging components that can drag down the code significantly! If this does occur, reload the page after you've closed the inspector.", "font-family:'Gill Sans',Calibri,Tahoma;font-weight:600;font-size:15px")
 
-// Helpful browser hacks
+window.addEventListener("load", function () {
+    try {
+        if (navigator.serviceWorker) {
+            navigator.serviceWorker.register("serviceWorker.js")
+                .then(() => {
+                    console.log("Service Worker registered!")
+                })
+                .catch(e => {
+                    console.warn("Service Worker registration failed:", e)
+                })
+        } else {
+            console.warn("Service workers do not work!")
+        }
+    } catch (e) {
+        console.error("Service Worker did not register:", e)
+    }
+})
+
+// Helpful browser detection tools
 const isFirefox = !!window.InternalError
 const isSafari = !!window.GestureEvent
 
@@ -17,11 +40,233 @@ const isSafari = !!window.GestureEvent
 function tryWakeLock() {
     if (navigator.wakeLock) {
         try {
-            wakeLock = navigator.wakeLock.request("screen");
+            wakeLock = navigator.wakeLock.request("screen")
         } catch (e) {
             // Don't worry about it.
         }
     }
+}
+
+// M1: Linear sRGB to LMS
+// Corresponds to the first matrix multiplication for l, m, s in linear_srgb_to_oklab()
+const M1_LINEAR_SRGB_TO_LMS = [
+    [0.4122214708, 0.5363325363, 0.0514459929],
+    [0.2119034982, 0.6806995451, 0.1073969566],
+    [0.0883024619, 0.2817188376, 0.6299787005]
+]
+
+// M2: LMS (non-linear) to Oklab
+// Corresponds to the coefficients for L, a, b in the return of linear_srgb_to_oklab()
+const M2_LMS_NON_LINEAR_TO_OKLAB = [
+    [0.2104542553, 0.7936177850, -0.0040720468],
+    [1.9779984951, -2.4285922050, 0.7827717662],
+    [0.0259040371, 0.4505937099, -0.8086757660]
+]
+
+// M2_INVERSE: Oklab to LMS (non-linear)
+// Corresponds to the coefficients for l_, m_, s_ in oklab_to_linear_srgb()
+const M2_INVERSE_OKLAB_TO_LMS_NON_LINEAR = [
+    [1.0, 0.3963377774, 0.2158037573],
+    [1.0, -0.1055613458, -0.0638541728],
+    [1.0, -0.0894841775, -1.2914855480]
+]
+
+// M1_INVERSE: LMS to Linear sRGB
+// Corresponds to the coefficients for R, G, B in the return of oklab_to_linear_srgb()
+const M1_INVERSE_LMS_TO_LINEAR_SRGB = [
+    [4.0767416621, -3.3077115913, 0.2309699292],
+    [-1.2684380046, 2.6097574011, -0.3413193965],
+    [-0.0041960863, -0.7034186147, 1.7076147010]
+]
+
+/**
+ * Helper function for matrix multiplication.
+ * Multiplies a 3x3 matrix by a 3x1 vector.
+ * @param {Array<Array<number>>} matrix - The 3x3 matrix.
+ * @param {Array<number>} vector - The 3x1 vector.
+ * @returns {Array<number>} The resulting 3x1 vector.
+ */
+function multiplyMatrixVector(matrix, vector) {
+    const result = [0, 0, 0]
+    for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            result[i] += matrix[i][j] * vector[j]
+        }
+    }
+    return result
+}
+
+/**
+ * Converts a packed sRGB number (e.g., 0xff0000) to an array [L, a, b] in Oklab space.
+ * @param {number} srgb_packed - The sRGB color as a packed number (0xRRGGBB).
+ * @returns {Array<number>} An array [L, a, b] representing the Oklab color.
+ */
+function srgb_to_oklab(srgb_packed) {
+    // Unpack sRGB components (0-255)
+    let r = ((srgb_packed >> 16) & 0xFF) / 255.0
+    let g = ((srgb_packed >> 8) & 0xFF) / 255.0
+    let b = (srgb_packed & 0xFF) / 255.0
+
+    // Convert sRGB to linear sRGB
+    // Standard sRGB EOTF (Electro-Optical Transfer Function)
+    r = r > 0.04045 ? Math.pow((r + 0.055) / 1.055, 2.4) : r / 12.92
+    g = g > 0.04045 ? Math.pow((g + 0.055) / 1.055, 2.4) : g / 12.92
+    b = b > 0.04045 ? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92
+
+    // Convert linear sRGB to LMS (Long-Medium-Short) color space using M1_LINEAR_SRGB_TO_LMS
+    const lms_linear = multiplyMatrixVector(M1_LINEAR_SRGB_TO_LMS, [r, g, b])
+
+    // Apply cube root non-linearity to LMS
+    const lms_oklab = lms_linear.map(val => Math.cbrt(val))
+
+    // Convert LMS to Oklab (L, a, b) using M2_LMS_NON_LINEAR_TO_OKLAB
+    const oklab = multiplyMatrixVector(M2_LMS_NON_LINEAR_TO_OKLAB, lms_oklab)
+
+    return oklab
+}
+
+/**
+ * Converts an array [L, a, b] in Oklab space back to a packed sRGB number.
+ * @param {Array<number>} oklab_array - An array [L, a, b] representing the Oklab color.
+ * @returns {number} The packed sRGB color number (0xRRGGBB).
+ */
+function oklab_to_srgb(oklab_array) {
+    const L = oklab_array[0]
+    const a = oklab_array[1]
+    const b = oklab_array[2]
+
+    // Convert Oklab (L, a, b) to LMS (non-linear) using M2_INVERSE_OKLAB_TO_LMS_NON_LINEAR
+    const lms_oklab = multiplyMatrixVector(M2_INVERSE_OKLAB_TO_LMS_NON_LINEAR, [L, a, b])
+
+    // Undo cube root non-linearity to get linear LMS
+    const lms_linear = lms_oklab.map(val => val * val * val)
+
+    // Convert linear LMS to linear sRGB using M1_INVERSE_LMS_TO_LINEAR_SRGB
+    let [r_linear, g_linear, b_linear] = multiplyMatrixVector(M1_INVERSE_LMS_TO_LINEAR_SRGB, lms_linear)
+
+    // Convert linear sRGB to sRGB (gamma correction - OETF: Opto-Electronic Transfer Function)
+    r_linear = r_linear > 0.0031308 ? (1.055 * Math.pow(r_linear, 1 / 2.4) - 0.055) : 12.92 * r_linear
+    g_linear = g_linear > 0.0031308 ? (1.055 * Math.pow(g_linear, 1 / 2.4) - 0.055) : 12.92 * g_linear
+    b_linear = b_linear > 0.0031308 ? (1.055 * Math.pow(b_linear, 1 / 2.4) - 0.055) : 12.92 * b_linear
+
+    // Clamp values to [0, 1] and convert to 0-255 integer
+    const R = Math.round(Math.max(0, Math.min(1, r_linear)) * 255)
+    const G = Math.round(Math.max(0, Math.min(1, g_linear)) * 255)
+    const B = Math.round(Math.max(0, Math.min(1, b_linear)) * 255)
+
+    // Pack into a single 32-bit number in 0xRRGGBB format
+    return ((R << 16) | (G << 8) | B) ^ 0xff000000
+}
+
+/**
+ * Generates a lookup table for converting 8-bit sRGB values (0-255) to linear sRGB (0.0-1.0).
+ * @returns {Float32Array} A 256-element array where index is sRGB value and value is linear sRGB.
+ */
+function generate_srgb_to_linear_lut() {
+    const lut = new Float32Array(256)
+    for (let i = 0; i < 256; i++) {
+        const srgb_norm = i / 255.0
+        lut[i] = srgb_norm > 0.04045 ? Math.pow((srgb_norm + 0.055) / 1.055, 2.4) : srgb_norm / 12.92
+    }
+    return lut
+}
+
+/**
+ * Generates a lookup table for converting linear sRGB values (0.0-1.0, represented as 0-255 integer steps) to 8-bit sRGB (0-255).
+ * @returns {Uint8Array} A 256-element array where index is linear sRGB step and value is 8-bit sRGB.
+ */
+function generate_linear_to_srgb_lut() {
+    const lut = new Uint8Array(256)
+    for (let i = 0; i < 256; i++) {
+        const linear_norm = i / 255.0
+        let srgb_val = linear_norm > 0.0031308 ? (1.055 * Math.pow(linear_norm, 1 / 2.4) - 0.055) : 12.92 * linear_norm
+        lut[i] = Math.round(Math.max(0, Math.min(1, srgb_val)) * 255)
+    }
+    return lut
+}
+
+/**
+ * Initializes color science data structures in provided memory.
+ * This includes generating a mega-palette for smooth color transitions
+ * and a shading lookup table for applying shade amounts to sRGB colors.
+ *
+ * @param {ArrayBuffer} memory An object containing an ArrayBuffer.
+ * @param {number} palleteStart The byte offset in `memory.buffer` where the mega-palette should be written.
+ * @param {number} shadingStart The byte offset in `memory.buffer` where the shading LUT should be written.
+ * @param {Array<number>} originalPalette An array of packed sRGB numbers (0xRRGGBB) representing the base palette.
+ * @returns {{megaPaletteSize: number}} An object containing the size of the generated mega-palette.
+ */
+function initializeColorScience(memory, highResSteps, palleteStart, shadingStart, originalPalette) {
+    // Generate sRGB <-> Linear sRGB LUTs once
+    const srgbToLinearLUT = generate_srgb_to_linear_lut()
+    const linearToSrgbLUT = generate_linear_to_srgb_lut()
+
+    // originalPalette.length - 1 because we interpolate between N colors, meaning N-1 segments.
+    // If originalPalette has 2 colors, there's 1 segment. If it has 10 colors, there are 9 segments.
+    const originalPaletteSegments = originalPalette.length - 1
+    const finalLUTLength = originalPaletteSegments * highResSteps
+    const megaPalette = new Uint32Array(finalLUTLength)
+
+    for (let i = 0; i < originalPaletteSegments; i++) {
+        const oklab1 = srgb_to_oklab(originalPalette[i])
+        const oklab2 = srgb_to_oklab(originalPalette[i + 1])
+        for (let j = 0; j < highResSteps; j++) {
+            const fraction = j / (highResSteps - 1)
+            const interpolated_oklab = [
+                oklab1[0] * (1 - fraction) + oklab2[0] * fraction,
+                oklab1[1] * (1 - fraction) + oklab2[1] * fraction,
+                oklab1[2] * (1 - fraction) + oklab2[2] * fraction
+            ]
+            megaPalette[i * highResSteps + j] = oklab_to_srgb(interpolated_oklab)
+        }
+    }
+
+    // Write the megaPalette to the shared memory buffer
+    new Uint32Array(memory.buffer, palleteStart, finalLUTLength).set(megaPalette)
+
+    const numShades = 256
+    const shadingLUT = new Uint8Array(256 * numShades) // 256 original values * 256 shade amounts
+    for (let originalValue = 0; originalValue < 256; originalValue++) {
+        // Get the linear representation of the original sRGB 8-bit value
+        const linearValue = srgbToLinearLUT[originalValue]
+        for (let shadeAmount = 0; shadeAmount < numShades; shadeAmount++) {
+            const shadeFraction = 1 - (shadeAmount / 255) // 0 (full shade) to 1 (no shade)
+            const shadedLinearValue = linearValue * shadeFraction
+
+            // Convert the shaded linear value back to an 8-bit sRGB value using the LUT
+            // We multiply by 255 and round to get the appropriate index for linearToSrgbLUT
+            const finalSrgbValue = linearToSrgbLUT[Math.round(Math.max(0, Math.min(1, shadedLinearValue)) * 255)]
+
+            shadingLUT[originalValue * numShades + shadeAmount] = finalSrgbValue
+        }
+    }
+
+    // Write the shadingLUT to the shared memory buffer
+    new Uint8Array(memory.buffer, shadingStart, shadingLUT.length).set(shadingLUT)
+}
+
+function parseGracefulUrlParams(url) {
+    const parsedUrl = new URL(url)
+    const searchPart = parsedUrl.search
+
+    // If there's only one question mark, URLSearchParams works perfectly
+    if (searchPart.indexOf("?") === searchPart.lastIndexOf("?")) {
+        return new URLSearchParams(searchPart)
+    }
+
+    const parts = searchPart.substring(1).split("?") // Remove leading question mark
+    let combinedQueryString = ""
+
+    if (parts.length > 0) {
+        combinedQueryString = parts[0]
+
+        for (let i = 1; i < parts.length; i++) {
+            combinedQueryString += "&" + parts[i]
+        }
+    }
+
+    // Now, create a URLSearchParams object from the "corrected" string
+    return new URLSearchParams(combinedQueryString)
 }
 
 const buttons = Array.from(document.getElementsByTagName("button")).slice(2)
@@ -31,14 +276,19 @@ const line = document.getElementById("line")
 const sheet = document.getElementById("sheet")
 const select = document.getElementById("select")
 const canvas = document.getElementById("canvas")
-const ctx = canvas.getContext("2d")
+const ctx = canvas.getContext("2d", { willReadFrequently: false }) // Some browsers are stinky and get mad after several fast getImageData calls which happen on resize. (Although this doesn't seem to do anything.)
 const previous = document.getElementById("previous")
 const ctx2 = previous.getContext("2d")
 const hidden = document.createElement("canvas")
 const ctx3 = hidden.getContext("2d")
 const percent = document.getElementById("percent")
 const welcome = document.getElementById("welcome")
-const workerCount = navigator.hardwareConcurrency
+const newPallete = document.getElementById("newPallete")
+
+var urlParameters = parseGracefulUrlParams(location)
+const workerCount = useSharedWebWorkers ? urlParameters.get("workers") ? +urlParameters.get("workers") : navigator.hardwareConcurrency : 1
+document.getElementById("hardwareWorkers").textContent = navigator.hardwareConcurrency + (navigator.hardwareConcurrency === 1 ? " worker" : " workers") + (workerCount !== navigator.hardwareConcurrency ? " (overridden to " + workerCount + ")" : "")
+const unsharedWASMFileName = "data:application/wasm;base64,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"
 var w, h, colorDataStart, wasmLength, dataArray, colorBytes, dataBits, palleteData, colorArray, pixelItem
 
 // Notes for the welcome popup
@@ -46,20 +296,243 @@ if (isSafari) {
     notice.textContent = "IMPORTANT: Safari is significantly slower for this program than other browsers, and misses out on a few minor features. Try using a browser like Firefox or Chrome to get the best speed and performance."
 }
 
+function updateProgressLine(currentPixel) {
+    if (currentPixel === -1 || currentPixel >= pixels) {
+        line.removeAttribute("style")
+        return
+    }
+
+    const pixelDiff = Math.round((currentPixel - originalPixel) * 0.01)
+    let color
+    if (pixelDiff >= 768) {
+        const brightness = Math.min(255, (pixelDiff >> 2) - 768)
+        color = "rgb(" + brightness + ",255," + brightness + ")"
+    } else if (pixelDiff < 256) {
+        color = "rgb(255," + pixelDiff + ",0)"
+    } else {
+        color = "rgb(" + ((pixelDiff - 256) >> 1) + ",255,0)"
+    }
+
+    // Update the line's visual style immediately.
+    line.style.top = (Math.floor(currentPixel / w) / devicePixelRatio).toFixed(1) + "px"
+    line.style.backgroundColor = color
+}
+
+/**
+ * This simulates a Web Worker's API when SharedArrayBuffer is not available.
+ * It runs WebAssembly operations directly in the main thread.
+ */
+function FakeWorker() {
+    this.workerID = -1
+    this.memory = null
+    this.handlePixels = null
+    this.handleRender = null
+    this._mainThreadOnMessage = null
+    this._isSetup = false
+    this.wasmFileName = unsharedWASMFileName
+}
+
+/**
+ * Sets the function that will receive messages from this simulated worker.
+ */
+Object.defineProperty(FakeWorker.prototype, "onmessage", {
+    set: function (func) {
+        this._mainThreadOnMessage = func
+    },
+    enumerable: true,
+    configurable: true
+})
+
+/**
+ * Simulates sending a message from the main script to this worker.
+ */
+FakeWorker.prototype.postMessage = function (data) {
+    if (data.id !== undefined) {
+        this.workerID = data.id
+    }
+
+    if (data.mem !== undefined) {
+        this.memory = data.mem // Expects a WebAssembly.Memory object
+
+        if (!this._isSetup) {
+            // Defer setupWorker to simulate async loading
+            setTimeout(() => this.setupWorker(), 0)
+            this._isSetup = true
+        }
+    }
+
+    if (Array.isArray(data) && typeof data[0] === "number") {
+        const sliced = data.slice(1)
+        let result = null
+        try {
+            if (data[0] === 1 && this.handlePixels) {
+                // Execute the WASM function
+                result = this.handlePixels.apply(this, sliced)
+                immediateProgress = result
+                updateProgressLine(pixelItem[0])
+            } else if (data[0] === 2 && this.handleRender) {
+                result = this.handleRender.apply(this, sliced)
+            }
+        } catch (error) {
+            console.error("FakeWorker: Error executing WASM function:", error)
+            // Signal an error by posting a specific value or throwing.
+            result = -1 // Or some other agreed-upon error signal for the worker.
+        }
+
+        // Defer posting the message to simulate asynchronicity, and allow performance.now() to work properly!
+        setTimeout(() => {
+            this._postMessageFromWorker(result)
+        }, 0)
+    }
+}
+
+/**
+ * Simulates the worker sending a message back to the main thread.
+ */
+FakeWorker.prototype._postMessageFromWorker = function (data) {
+    if (this._mainThreadOnMessage) {
+        this._mainThreadOnMessage({ data: data })
+    }
+}
+
+/**
+ * Initializes the WebAssembly module.
+ */
+FakeWorker.prototype.setupWorker = function () {
+    if (!window.WebAssembly || !WebAssembly.instantiateStreaming) {
+        console.error("FakeWorker: WebAssembly is not supported, cannot instantiate WASM module.")
+        setTimeout(() => this._postMessageFromWorker(-1), 0) // Defer error signal
+        return
+    }
+
+    WebAssembly.instantiateStreaming(fetch(this.wasmFileName), { // Use the provided WASM file name
+        env: {
+            memory: this.memory
+        }
+    }).then(result => {
+        this.handlePixels = result.instance.exports.run
+        this.handleRender = result.instance.exports.render
+        setTimeout(() => this._postMessageFromWorker(-2), 0) // Defer successful setup signal
+    }).catch(error => {
+        console.error("FakeWorker: Error instantiating WASM module:", error)
+        setTimeout(() => this._postMessageFromWorker(-1), 0) // Defer error signal
+    })
+}
+
+/**
+ * Gets the ArrayBuffer backing the WebAssembly.Memory.
+ */
+Object.defineProperty(FakeWorker.prototype, "buffer", {
+    get: function () {
+        return this.memory ? this.memory.buffer : null
+    },
+    enumerable: true,
+    configurable: true
+})
+
+/**
+ * Mimics WebAssembly.Memory.grow().
+ */
+FakeWorker.prototype.grow = function (pages) {
+    if (this.memory) {
+        try {
+            this.memory.grow(pages)
+        } catch (e) {
+            help.style.display = "unset"
+            help.innerHTML = 'Unfortunately, an error occured while adding more memory. This may be because of memory limitations; try adding ?maxMB=4096 to the start of the URL (no commas), or check the console if that doesn\'t work.<br><button onclick="help.removeAttribute(\'style\')" id="infoClose">Close</button>'
+            throw e
+        }
+    }
+}
+
+function messageWebWorkers(message, addID) {
+    for (var i = 0; i < webWorkers.length; i++) {
+        if (addID) {
+            message.id = i
+        }
+        webWorkers[i].postMessage(message)
+    }
+}
+
+// Giant tables of color values (in hexadecimal)
+const palletes = [
+    [0x0a0aa0, 0x3232ff, 0x00c8ff, 0x00b43c, 0xdcb428, 0x7d643c, 0xdcc8c8, 0xc864aa, 0x820a8c, 0x7d00b9, 0x375ff5, 0x14a0e6, 0x5fe1dc, 0x8ce1c8, 0x9bc87d, 0xf08750, 0xe650aa, 0xa564f0],
+    [0xf7c3f1, 0xe7ece9, 0xc8b2af, 0x181519, 0xbfaaae, 0xcac7ca, 0xc9afb3, 0x424141, 0xd1aead, 0xe9e7ea, 0xd0acb4, 0x171516, 0xc59b8e, 0xc4c4c4, 0xc18477, 0x444645, 0xc3995b, 0xeceae7, 0xbcb346, 0x1a1b1b, 0xe3ae54, 0xd0d1cf, 0xcfb6b1, 0x37373b, 0xc8afb1, 0xeaebe7, 0xc0afaf, 0x141415, 0xc2afa8, 0xc7ccca, 0xc2b2ae, 0x403c41, 0xcdb6b1, 0xe6eceb, 0xc6b2bc, 0x151516, 0xc7a9bb, 0xc4c7c4, 0xc992c6, 0x4b4b45, 0xcda2af, 0xe9ebea, 0xc5b3af, 0x1a1419, 0xd6ad97, 0xd4d3d5, 0xd19866, 0x3e393d, 0xd7732e, 0xebe8ec, 0xd29f56, 0x151615, 0xbeb5a9, 0xc4c9ca, 0xc5b8a4, 0x3e4141, 0xc4b6a9, 0xeae6e5, 0xc7bb59, 0x191414, 0xccb979, 0xc7c7c5, 0xbcb0a3, 0x433f42, 0xb5b05b, 0xece5e9, 0xbdb660, 0x161518, 0xc2bb51, 0xd3d9d9, 0xc1bd56, 0x494444, 0xbfbc59, 0xe5e5e5, 0x7f7c3d, 0x1a1919, 0x9e9e47, 0xc3c1c4, 0xc3994c, 0x2e322f, 0xc67f44, 0xe6ebea, 0xc88c7b, 0x151b19, 0xca5693, 0xc6c6c6, 0xc4529d, 0x4f4c4e, 0xb87b8a, 0xe9eceb, 0xaf6d59, 0x1b1b14, 0xbcc054, 0xd6d7d7, 0xb7bf43, 0x3b3535, 0xb4ba55, 0xe6e8ec, 0xb1b952, 0x171817, 0xafb650, 0xc3c1c5, 0xb4c04c, 0x373539, 0xb7c444, 0xe7e9ec, 0xbaa466, 0x191a1a, 0x844435, 0xc8c9c5, 0xd2657a, 0x4d4b4d, 0xbe9e50, 0xe5e7e7, 0xb3bc3d, 0x1b1915, 0xb1be48, 0xd0d2d6, 0xb2c03a, 0x362f35, 0xb1bc47, 0xe7ece5, 0xb0b753, 0x141517, 0x93b94e, 0xc7c9c9, 0x519f03, 0x3d3e43, 0xb3c73d, 0xeaeceb, 0xadc638, 0x181b17, 0xa9c24f, 0xcacbc9, 0x7ebb6b, 0x484948, 0x4ac484, 0xe9e5ec, 0x6fa65f, 0x1a1916, 0xb5c445, 0xd5ced1, 0xb0c548, 0x3c3638, 0xaabf3d, 0xece5e8, 0xb0b74f, 0x19171b, 0xafb948, 0xc9c5ca, 0xaac140, 0x3d3e43, 0xafc13f, 0xe8e5e6, 0xacc234, 0x141416, 0xafc14e, 0xc3c4c2, 0xadbb4f, 0x474747, 0xb1bc4c, 0xe5ebe5, 0x757a2a, 0x151716, 0x393e13, 0xd7d4d3, 0x2d873b, 0x3f3e39, 0x3eaf57, 0xe9e6e9, 0x66b668, 0x141816, 0x9cba4f, 0xc8cbc9, 0xadbf44, 0x3c3d40, 0xb7bc47, 0xeae7e5, 0x68bc39, 0x191917, 0x68c838, 0xc2c3c3, 0xacc559, 0x404645, 0xafb049, 0xeae7ec, 0xb0b552, 0x191914, 0xb0bb3f, 0xd7d3d4, 0xb7b84a, 0x434a43, 0xb6b44f, 0xe5e5ea, 0x98b54e, 0x14181b, 0x55b163, 0xc1c1c6, 0x009800, 0x2c322c, 0x42763d, 0xe8e7e6, 0x64b346, 0x181b15, 0x41c04e, 0xc8c6c7, 0xb6ae5a, 0x524c52, 0xb1b050, 0xeae8e7, 0xb6aa55, 0x141515, 0xb9ad53, 0xd6dad7, 0xbba242, 0x393535, 0xc08d4b, 0xeaeaeb, 0xb65d53, 0x1b181a, 0xb69551, 0xc4c4c4, 0xbaa556, 0x3a353a, 0xbb594f, 0xeae5ec, 0xc27658, 0x181616, 0xbd5756, 0xcacbca, 0xb75d5c, 0x4b4d4e, 0xb75a5a, 0xeae9e9, 0xc05c8b, 0x181b17, 0xcc5cad, 0xd1d0ce, 0xb77bba, 0x353734, 0xc464c5, 0xe9e6e6, 0xb957aa, 0x181515, 0xc45086, 0xc9c5c6, 0xbd56a8, 0x424042, 0xde86ad, 0xe9e5ea, 0xd26899, 0x161b19, 0xb94eb2, 0xc6cbc4, 0x9d67cf, 0x4d464b, 0xb759aa, 0xe6eae9, 0xca6ba7, 0x15171a, 0xc045a1, 0xcfd4d0, 0xc44ba6, 0x393935, 0xc23f7d, 0xe9e7e9, 0xbc53a6, 0x151a18, 0xa540c0, 0xc9c7c6, 0xbd46a4, 0x3f3d43, 0xc846a7, 0xebebea, 0xdb57ce, 0x161518, 0xa858c8, 0xc7c7c5, 0x6b3fca, 0x454a47, 0xb054a7, 0xe9eae8, 0xd176ba, 0x1a181a, 0xca2cb6, 0xd6d8d7, 0xc543a6, 0x403d3c, 0xb24f8c, 0xe6e7ec, 0xb849a9, 0x19171b, 0xb950a8, 0xcac5c9, 0xbf45aa, 0x3e3e3b, 0xc749a9, 0xe5e6e7, 0xc833a1, 0x161419, 0xc03c81, 0xc4c5c1, 0xc33d55, 0x3f4246, 0xdc9942, 0xe6e8e5, 0xb7bd66, 0x171a18, 0xcf8d52, 0xdad5da, 0xc944a8, 0x494549, 0xc34ca9, 0xe9e8e7, 0x9b41bd, 0x181514, 0x8f45ca, 0xc2c1c5, 0xb239c6, 0x2c322f, 0xbd3dc4, 0xebe8ec, 0xca45ae, 0x18161a, 0xc742a6, 0xc3c7c5, 0xb959aa, 0x4c534f, 0xc04eaf, 0xe9eae7, 0xcb34b7, 0x191416, 0x9d1e9f, 0xd8d8d4, 0x791e96, 0x373833, 0x5f1abb, 0xece8ec, 0x9a39dc, 0x161714, 0xa776e0, 0xeceaeb, 0x99abf6, 0x3c3837, 0x76cdf3, 0xe7e9e7, 0x5b95dc, 0x1a1417, 0x5452cd, 0xdfe3e3, 0x7225bc, 0x4c4e4a, 0xb34acb, 0xe8e7eb, 0xc845b3, 0x1b141b, 0xcc51b3, 0xd1d4d4, 0xca4ab7, 0x323433, 0xc452b4, 0xece7e5, 0xbe5cb8, 0x141814, 0xa73c97, 0xc5c9c7, 0x96498c, 0x3a3e3c, 0x81347e, 0xe6e9e9, 0x5e3660, 0x161817, 0x934986, 0xc4c6c4, 0xc255b9, 0x4e4747, 0xbba3b4, 0xe9ece9, 0xc55abe, 0x1b1814, 0xdc91d2, 0xd2d1ce, 0xcd5bc3, 0x393232, 0xcb58bb, 0xebeae9, 0xbfa6b5, 0x151519, 0xc45bb8, 0xcbcbca, 0xc85abc, 0x42403f, 0xcaa3c1, 0xeae6eb, 0xd157c6, 0x151516, 0xd49bca, 0xc4c2c4, 0xc1a3bc, 0x464143, 0xd498c8, 0xe6e5e9, 0xc6a5bf, 0x141a19, 0xe5ace3, 0xd7d6d4, 0xcba6c5, 0x403d3c, 0xcda6c6, 0xe8e7e7, 0xc5a6bf, 0x161716, 0xbeabbd, 0xc4c5c9, 0xcca7c5, 0x3c3e3a, 0xcca9c6, 0xe8e9ec, 0xcb88cb, 0x17181a, 0xb62fb4, 0xc1c2c0, 0xa470bf, 0x454043, 0xc4a8be, 0xe5e7e7, 0xc8aec6, 0x161617, 0xcfabd1, 0xd8d3d5, 0x9d6bcc, 0x454442, 0xd9a6ee, 0xe6ece9, 0xcba1c7, 0x181a18, 0xc288c9, 0xc1c3c7, 0xcbaac6, 0x333333, 0xd0a8cb, 0xe7e9e7, 0xcfb0cf, 0x141a18, 0xc9adcc, 0xcac5c7, 0xc0adbe, 0x53524d, 0xc1acbf, 0xe5e9e8, 0xdb9ccc, 0x141914, 0xd3aad0, 0xd5dbd7, 0x9983cf, 0x363a34, 0x8a70d2, 0xece7ec, 0x6297ec, 0x161419, 0x68c9e2, 0xedeff4, 0x46cc8c, 0x373d39, 0x93ce3f, 0xe5e6eb, 0xcac25c, 0x151415, 0xd4aa4b, 0xdce1db, 0xe27eda, 0x4d4a4b, 0xc999cb, 0xe6ecea, 0xc7a8cc, 0x19161a, 0xccafc8, 0xcfced3, 0xc7a7d2, 0x373539, 0xbfb0cb, 0xeae9e6, 0xbeaabe, 0x171a17, 0xbaa4be, 0xc6c4ca, 0xbca9c4, 0x3d403b, 0xc6a9cf, 0xe6e9e9, 0xc8aad1, 0x181915, 0xbeaac9, 0xcac4cb, 0xbda4c5, 0x4a4b4f, 0xb7abc2, 0xe8e9e7, 0xbeabc9, 0x1a1b19, 0xc4a9d2, 0xced2d1, 0xc1abce, 0x303736, 0xb9a9c8, 0xeae7e7, 0xb8aabc, 0x18141a, 0xb2a3c3, 0xc8c7c9, 0xb5a6c5, 0x444344, 0x967dc0, 0xebe5e8, 0x9574ec, 0x191a14, 0x9d85e4, 0xc6c6c2, 0xa38ec5, 0x424540, 0xb2a3c4, 0xe5e7e8, 0xb7a6c8, 0x161b17, 0xc1aec8, 0xd5d8d4, 0xb2a6cb, 0x42413e, 0xb3aac7, 0xe5ebe9, 0xb1a7c1, 0x191816, 0xafaac2, 0xcac8c6, 0xaea6ca, 0x3a3f39, 0xb3a8cc, 0xece5e6, 0xc4a7cf, 0x1a1b19, 0xd898cd, 0xc3c4c2, 0xcd8fc1, 0x414341, 0xdd81bf, 0xece9ec, 0xda61b2, 0x151818, 0xe590d8, 0xd9d7d5, 0xb1a6cf, 0x444340, 0xaca7cb, 0xe5e5ec, 0xaaa9c6, 0x181519, 0xa6a4bd, 0xc6c2c0, 0xa3a4cd, 0x2c2f2f, 0xa4a6d1, 0xece5e7, 0xa7accc, 0x1b1915, 0xaaa6c7, 0xcac5c7, 0xa9aec3, 0x514f50, 0xa5a4c7, 0xeceae6, 0xa4a5cc, 0x1b1418, 0xa7a4ce, 0xdadbda, 0x969ac9, 0x3a3b34, 0xb6b2ea, 0xeceaeb, 0x97b7ee, 0x1b1a1a, 0x72b8e9, 0xe2e1e3, 0xa6adca, 0x383b36, 0xa5a2ce, 0xece6ec, 0xa6a6ce, 0x19171a, 0xa5a6c7, 0xcbc6c8, 0xaaa8be, 0x4a4b4b, 0xa8a7c1, 0xeaeaeb, 0x99a8eb, 0x171415, 0x8d94ed, 0xd1ced2, 0x79c5ec, 0x363535, 0x7aa7eb, 0xece7eb, 0x98a2d3, 0x141415, 0xa8a8c4, 0xcdd0d1, 0xaaa4c7, 0x3c3d3f, 0x9c96df, 0xeceae8, 0xa8a4ca, 0x1a1417, 0xa6a8c6, 0xcbc6c9, 0xa8a5bc, 0x4f504c, 0xaeaebb, 0xece7e9, 0xa8a6c6, 0x171b17, 0xa9aaca, 0xd5d0d2, 0xa7a4c7, 0x323135, 0xb491d6, 0xece5e7, 0xac80d6, 0x14151a, 0xbf6cd9, 0xc9c7ca, 0x956de0, 0x454545, 0x7e7ced, 0xe5e8eb, 0xa3a5bd, 0x151917, 0x8e83af, 0xd9d7d5, 0xaaa3b2, 0x433f3e, 0xa7a3b4, 0xe9eae9, 0xaca6b3, 0x181414, 0xa2a6c2, 0xd7d9d5, 0xb2a5b3, 0x423e3d, 0xaca7b5, 0xe7e9e7, 0xaca4ae, 0x151616, 0xaca7b1, 0xcbc5c4, 0x918ebd, 0x3a3b3c, 0xb2a6b0, 0xeae7ea, 0xd4b1d3, 0x1b161b, 0xcb98c6, 0xc3c1c1, 0xe5c7ee, 0x474644, 0xae88df, 0xeae8ea, 0xae61dd, 0x19181b, 0xb45da3, 0xd7d5d9, 0xc94b6e, 0x423f3f, 0xd2a188, 0xece9e7, 0xd28339, 0x161b1a, 0xc5a04b, 0xc6c4c3, 0xc17644, 0x2f2f33, 0xb55e51, 0xebe9e9, 0xc3984c, 0x171614, 0xae9d2e, 0xc5c7c7, 0xb6a660, 0x514e4e, 0xb0a556, 0xeaecea, 0xbe884e, 0x141914, 0xc46e3b, 0xdad4d7, 0xb58a43, 0x35343a, 0xb9a557, 0xe9ece5, 0xb6a355, 0x15161a, 0xb7a657, 0xc7c4c3, 0xb9a957, 0x36363b, 0xc5b037, 0xeae5e6, 0xbca54c, 0x171517, 0xb45b48, 0xcbcacb, 0xb05e51, 0x4c4b49, 0xb3a74e, 0xeae9e5, 0xb85d42, 0x171916, 0xb9a449, 0xd0d3d2, 0xbc5942, 0x393638, 0xbaa44b, 0xeae7e6, 0xb7a653, 0x161a19, 0xb45b45, 0xc4c3c7, 0xb7a149, 0x383d3f, 0xbb5939, 0xecece7, 0xb85840, 0x18181a, 0xb9a44e, 0xc4c6c9, 0xb2604c, 0x4a4f4e, 0xb9ab53, 0xeae9e9, 0xb55943, 0x141917, 0xb95d43, 0xd4d5d5, 0xb65741, 0x302f33, 0xb85740, 0xe7eaeb, 0xb5a551, 0x181917, 0xb05b50, 0xc9c5ca, 0xb5a64b, 0x444647, 0xb9a547, 0xeae5ea, 0xbb5d3f, 0x161516, 0xb5a852, 0xc4c6c4, 0xb15b4b, 0x434043, 0xb05e50, 0xe5e9eb, 0xb9a64b, 0x181b19, 0xba5c44, 0xd2d8d6, 0xb9a64f, 0x454445, 0xb6a04c, 0xe8e8e6, 0xb3a557, 0x191619, 0xb4a55a, 0xcac4c9, 0xaf5a4e, 0x36353a, 0xb9a954, 0xe6eaea, 0xb1564e, 0x141818, 0xb5a857, 0xc5c1c5, 0xafa35d, 0x454849, 0xb4a459, 0xe8ebe9, 0xc3b397, 0x141b14, 0xafa85a, 0xd8d6d7, 0xb3a35c, 0x43443f, 0xb3c15c, 0xe6e5e6, 0x9cd083, 0x17161b, 0x5abb50, 0xc3c4c2, 0xd2cb4c, 0x322f32], // this was NOT manually done; don't worry
+    [0xc8c8ff, 0x4cdbff, 0x692d7, 0x122c91, 0x371663, 0x600d39, 0x8a030f, 0xbf2600, 0xfb6200, 0xffc9a6, 0x000000]
+]
+const interiors = [0xff000000, 0xff000000, 0xff000000, 0xffffffff]
+const totalPalletes = palletes.length
+
+function setupPalletes() {
+    // Constants can be modified with push(), so this is quite all right.
+    for (var i = 0; i !== totalPalletes; i++) {
+        var pallete = palletes[i]
+        // Add transparency values
+        var start = pallete[0] ^ 0xff000000
+        pallete[0] = start
+        pallete.push(start)
+    }
+}
+
+setupPalletes()
+
+var palleteOverride = false
+var palleteID = 0
+var pallete = palletes[palleteID]
+var interior = interiors[0]
+var palleteLen = pallete.length - 1
+
+var pixels = Math.round(innerWidth * devicePixelRatio) * Math.round(innerHeight * devicePixelRatio)
+var flowRate = 0, flowAmount = 0
+var resizeW, resizeH
+
+var imageData, imageDataBuffer
+
 // To ensure that the site works properly, make sure this value is a multiple of 8 if you want to change it.
+const palleteResSteps = 256 // Used in OKHSL/OKHSV conversions
 const palleteStart = 4
-const palleteBytes = 8000
-const palleteBytes2 = palleteBytes + palleteStart
+const palleteBytes = 100000 * palleteResSteps
+const dataStart = palleteBytes + palleteStart
+var immediateProgress = 0
+var wasmLength = pixels * 12 + dataStart
 var webWorkers = []
 var workersDone = 0
 var calculationDiff = 1
 var rendersComp
 var needResize = false
 var needRender = false
+
+var memory, buffer
 function setupWebWorkers(amount) {
-    var workerLink = "worker.js"
     for (var i = 0; i < amount; i++) {
-        var worker = new Worker(workerLink)
+        var worker
+        if (useSharedWebWorkers) {
+            worker = new Worker("worker.js")
+        } else {
+            worker = new FakeWorker()
+            const fakeWorkerUpdateLoop = () => {
+                updateProgressLine(immediateProgress) // Update the line with the latest known value
+                if (unfinished) {
+                    requestAnimationFrame(fakeWorkerUpdateLoop)
+                }
+            }
+            requestAnimationFrame(fakeWorkerUpdateLoop)
+        }
+
+        var max = urlParameters.get("maxMB") * 16
+        try {
+            memory = new WebAssembly.Memory({
+                initial: Math.ceil(wasmLength / 65536),
+                maximum: max ? max : 20000, // 1,250 MB default
+                shared: useSharedWebWorkers
+            })
+        } catch (e) {
+            help.style.display = "unset"
+            help.innerHTML = 'Unfortunately, an error occured while creating the memory. This may be because of memory limitations; try adding ?maxMB=4096 to the start of the URL (no commas), or check the console if that doesn\'t work.<br><button onclick="help.removeAttribute(\'style\')" id="infoClose">Close</button>'
+            throw e
+        }
+        buffer = memory.buffer
+
         worker.onmessage = function (e) {
             var data = e.data
             if (data === -2) {
@@ -103,56 +576,6 @@ function setupWebWorkers(amount) {
         webWorkers.push(worker)
     }
 }
-
-function messageWebWorkers(message, addID) {
-    for (var i = 0; i < webWorkers.length; i++) {
-        if (addID) {
-            message.id = i
-        }
-        webWorkers[i].postMessage(message)
-    }
-}
-
-// Giant tables of color values (in hexadecimal)
-const palletes = [
-    [0x0a0aa0, 0x3232ff, 0x00c8ff, 0x00b43c, 0xdcb428, 0x7d643c, 0xdcc8c8, 0xc864aa, 0x820a8c, 0x7d00b9, 0x375ff5, 0x14a0e6, 0x5fe1dc, 0x8ce1c8, 0x9bc87d, 0xf08750, 0xe650aa, 0xa564f0],
-    [0xf7c3f1, 0xe7ece9, 0xc8b2af, 0x181519, 0xbfaaae, 0xcac7ca, 0xc9afb3, 0x424141, 0xd1aead, 0xe9e7ea, 0xd0acb4, 0x171516, 0xc59b8e, 0xc4c4c4, 0xc18477, 0x444645, 0xc3995b, 0xeceae7, 0xbcb346, 0x1a1b1b, 0xe3ae54, 0xd0d1cf, 0xcfb6b1, 0x37373b, 0xc8afb1, 0xeaebe7, 0xc0afaf, 0x141415, 0xc2afa8, 0xc7ccca, 0xc2b2ae, 0x403c41, 0xcdb6b1, 0xe6eceb, 0xc6b2bc, 0x151516, 0xc7a9bb, 0xc4c7c4, 0xc992c6, 0x4b4b45, 0xcda2af, 0xe9ebea, 0xc5b3af, 0x1a1419, 0xd6ad97, 0xd4d3d5, 0xd19866, 0x3e393d, 0xd7732e, 0xebe8ec, 0xd29f56, 0x151615, 0xbeb5a9, 0xc4c9ca, 0xc5b8a4, 0x3e4141, 0xc4b6a9, 0xeae6e5, 0xc7bb59, 0x191414, 0xccb979, 0xc7c7c5, 0xbcb0a3, 0x433f42, 0xb5b05b, 0xece5e9, 0xbdb660, 0x161518, 0xc2bb51, 0xd3d9d9, 0xc1bd56, 0x494444, 0xbfbc59, 0xe5e5e5, 0x7f7c3d, 0x1a1919, 0x9e9e47, 0xc3c1c4, 0xc3994c, 0x2e322f, 0xc67f44, 0xe6ebea, 0xc88c7b, 0x151b19, 0xca5693, 0xc6c6c6, 0xc4529d, 0x4f4c4e, 0xb87b8a, 0xe9eceb, 0xaf6d59, 0x1b1b14, 0xbcc054, 0xd6d7d7, 0xb7bf43, 0x3b3535, 0xb4ba55, 0xe6e8ec, 0xb1b952, 0x171817, 0xafb650, 0xc3c1c5, 0xb4c04c, 0x373539, 0xb7c444, 0xe7e9ec, 0xbaa466, 0x191a1a, 0x844435, 0xc8c9c5, 0xd2657a, 0x4d4b4d, 0xbe9e50, 0xe5e7e7, 0xb3bc3d, 0x1b1915, 0xb1be48, 0xd0d2d6, 0xb2c03a, 0x362f35, 0xb1bc47, 0xe7ece5, 0xb0b753, 0x141517, 0x93b94e, 0xc7c9c9, 0x519f03, 0x3d3e43, 0xb3c73d, 0xeaeceb, 0xadc638, 0x181b17, 0xa9c24f, 0xcacbc9, 0x7ebb6b, 0x484948, 0x4ac484, 0xe9e5ec, 0x6fa65f, 0x1a1916, 0xb5c445, 0xd5ced1, 0xb0c548, 0x3c3638, 0xaabf3d, 0xece5e8, 0xb0b74f, 0x19171b, 0xafb948, 0xc9c5ca, 0xaac140, 0x3d3e43, 0xafc13f, 0xe8e5e6, 0xacc234, 0x141416, 0xafc14e, 0xc3c4c2, 0xadbb4f, 0x474747, 0xb1bc4c, 0xe5ebe5, 0x757a2a, 0x151716, 0x393e13, 0xd7d4d3, 0x2d873b, 0x3f3e39, 0x3eaf57, 0xe9e6e9, 0x66b668, 0x141816, 0x9cba4f, 0xc8cbc9, 0xadbf44, 0x3c3d40, 0xb7bc47, 0xeae7e5, 0x68bc39, 0x191917, 0x68c838, 0xc2c3c3, 0xacc559, 0x404645, 0xafb049, 0xeae7ec, 0xb0b552, 0x191914, 0xb0bb3f, 0xd7d3d4, 0xb7b84a, 0x434a43, 0xb6b44f, 0xe5e5ea, 0x98b54e, 0x14181b, 0x55b163, 0xc1c1c6, 0x009800, 0x2c322c, 0x42763d, 0xe8e7e6, 0x64b346, 0x181b15, 0x41c04e, 0xc8c6c7, 0xb6ae5a, 0x524c52, 0xb1b050, 0xeae8e7, 0xb6aa55, 0x141515, 0xb9ad53, 0xd6dad7, 0xbba242, 0x393535, 0xc08d4b, 0xeaeaeb, 0xb65d53, 0x1b181a, 0xb69551, 0xc4c4c4, 0xbaa556, 0x3a353a, 0xbb594f, 0xeae5ec, 0xc27658, 0x181616, 0xbd5756, 0xcacbca, 0xb75d5c, 0x4b4d4e, 0xb75a5a, 0xeae9e9, 0xc05c8b, 0x181b17, 0xcc5cad, 0xd1d0ce, 0xb77bba, 0x353734, 0xc464c5, 0xe9e6e6, 0xb957aa, 0x181515, 0xc45086, 0xc9c5c6, 0xbd56a8, 0x424042, 0xde86ad, 0xe9e5ea, 0xd26899, 0x161b19, 0xb94eb2, 0xc6cbc4, 0x9d67cf, 0x4d464b, 0xb759aa, 0xe6eae9, 0xca6ba7, 0x15171a, 0xc045a1, 0xcfd4d0, 0xc44ba6, 0x393935, 0xc23f7d, 0xe9e7e9, 0xbc53a6, 0x151a18, 0xa540c0, 0xc9c7c6, 0xbd46a4, 0x3f3d43, 0xc846a7, 0xebebea, 0xdb57ce, 0x161518, 0xa858c8, 0xc7c7c5, 0x6b3fca, 0x454a47, 0xb054a7, 0xe9eae8, 0xd176ba, 0x1a181a, 0xca2cb6, 0xd6d8d7, 0xc543a6, 0x403d3c, 0xb24f8c, 0xe6e7ec, 0xb849a9, 0x19171b, 0xb950a8, 0xcac5c9, 0xbf45aa, 0x3e3e3b, 0xc749a9, 0xe5e6e7, 0xc833a1, 0x161419, 0xc03c81, 0xc4c5c1, 0xc33d55, 0x3f4246, 0xdc9942, 0xe6e8e5, 0xb7bd66, 0x171a18, 0xcf8d52, 0xdad5da, 0xc944a8, 0x494549, 0xc34ca9, 0xe9e8e7, 0x9b41bd, 0x181514, 0x8f45ca, 0xc2c1c5, 0xb239c6, 0x2c322f, 0xbd3dc4, 0xebe8ec, 0xca45ae, 0x18161a, 0xc742a6, 0xc3c7c5, 0xb959aa, 0x4c534f, 0xc04eaf, 0xe9eae7, 0xcb34b7, 0x191416, 0x9d1e9f, 0xd8d8d4, 0x791e96, 0x373833, 0x5f1abb, 0xece8ec, 0x9a39dc, 0x161714, 0xa776e0, 0xeceaeb, 0x99abf6, 0x3c3837, 0x76cdf3, 0xe7e9e7, 0x5b95dc, 0x1a1417, 0x5452cd, 0xdfe3e3, 0x7225bc, 0x4c4e4a, 0xb34acb, 0xe8e7eb, 0xc845b3, 0x1b141b, 0xcc51b3, 0xd1d4d4, 0xca4ab7, 0x323433, 0xc452b4, 0xece7e5, 0xbe5cb8, 0x141814, 0xa73c97, 0xc5c9c7, 0x96498c, 0x3a3e3c, 0x81347e, 0xe6e9e9, 0x5e3660, 0x161817, 0x934986, 0xc4c6c4, 0xc255b9, 0x4e4747, 0xbba3b4, 0xe9ece9, 0xc55abe, 0x1b1814, 0xdc91d2, 0xd2d1ce, 0xcd5bc3, 0x393232, 0xcb58bb, 0xebeae9, 0xbfa6b5, 0x151519, 0xc45bb8, 0xcbcbca, 0xc85abc, 0x42403f, 0xcaa3c1, 0xeae6eb, 0xd157c6, 0x151516, 0xd49bca, 0xc4c2c4, 0xc1a3bc, 0x464143, 0xd498c8, 0xe6e5e9, 0xc6a5bf, 0x141a19, 0xe5ace3, 0xd7d6d4, 0xcba6c5, 0x403d3c, 0xcda6c6, 0xe8e7e7, 0xc5a6bf, 0x161716, 0xbeabbd, 0xc4c5c9, 0xcca7c5, 0x3c3e3a, 0xcca9c6, 0xe8e9ec, 0xcb88cb, 0x17181a, 0xb62fb4, 0xc1c2c0, 0xa470bf, 0x454043, 0xc4a8be, 0xe5e7e7, 0xc8aec6, 0x161617, 0xcfabd1, 0xd8d3d5, 0x9d6bcc, 0x454442, 0xd9a6ee, 0xe6ece9, 0xcba1c7, 0x181a18, 0xc288c9, 0xc1c3c7, 0xcbaac6, 0x333333, 0xd0a8cb, 0xe7e9e7, 0xcfb0cf, 0x141a18, 0xc9adcc, 0xcac5c7, 0xc0adbe, 0x53524d, 0xc1acbf, 0xe5e9e8, 0xdb9ccc, 0x141914, 0xd3aad0, 0xd5dbd7, 0x9983cf, 0x363a34, 0x8a70d2, 0xece7ec, 0x6297ec, 0x161419, 0x68c9e2, 0xedeff4, 0x46cc8c, 0x373d39, 0x93ce3f, 0xe5e6eb, 0xcac25c, 0x151415, 0xd4aa4b, 0xdce1db, 0xe27eda, 0x4d4a4b, 0xc999cb, 0xe6ecea, 0xc7a8cc, 0x19161a, 0xccafc8, 0xcfced3, 0xc7a7d2, 0x373539, 0xbfb0cb, 0xeae9e6, 0xbeaabe, 0x171a17, 0xbaa4be, 0xc6c4ca, 0xbca9c4, 0x3d403b, 0xc6a9cf, 0xe6e9e9, 0xc8aad1, 0x181915, 0xbeaac9, 0xcac4cb, 0xbda4c5, 0x4a4b4f, 0xb7abc2, 0xe8e9e7, 0xbeabc9, 0x1a1b19, 0xc4a9d2, 0xced2d1, 0xc1abce, 0x303736, 0xb9a9c8, 0xeae7e7, 0xb8aabc, 0x18141a, 0xb2a3c3, 0xc8c7c9, 0xb5a6c5, 0x444344, 0x967dc0, 0xebe5e8, 0x9574ec, 0x191a14, 0x9d85e4, 0xc6c6c2, 0xa38ec5, 0x424540, 0xb2a3c4, 0xe5e7e8, 0xb7a6c8, 0x161b17, 0xc1aec8, 0xd5d8d4, 0xb2a6cb, 0x42413e, 0xb3aac7, 0xe5ebe9, 0xb1a7c1, 0x191816, 0xafaac2, 0xcac8c6, 0xaea6ca, 0x3a3f39, 0xb3a8cc, 0xece5e6, 0xc4a7cf, 0x1a1b19, 0xd898cd, 0xc3c4c2, 0xcd8fc1, 0x414341, 0xdd81bf, 0xece9ec, 0xda61b2, 0x151818, 0xe590d8, 0xd9d7d5, 0xb1a6cf, 0x444340, 0xaca7cb, 0xe5e5ec, 0xaaa9c6, 0x181519, 0xa6a4bd, 0xc6c2c0, 0xa3a4cd, 0x2c2f2f, 0xa4a6d1, 0xece5e7, 0xa7accc, 0x1b1915, 0xaaa6c7, 0xcac5c7, 0xa9aec3, 0x514f50, 0xa5a4c7, 0xeceae6, 0xa4a5cc, 0x1b1418, 0xa7a4ce, 0xdadbda, 0x969ac9, 0x3a3b34, 0xb6b2ea, 0xeceaeb, 0x97b7ee, 0x1b1a1a, 0x72b8e9, 0xe2e1e3, 0xa6adca, 0x383b36, 0xa5a2ce, 0xece6ec, 0xa6a6ce, 0x19171a, 0xa5a6c7, 0xcbc6c8, 0xaaa8be, 0x4a4b4b, 0xa8a7c1, 0xeaeaeb, 0x99a8eb, 0x171415, 0x8d94ed, 0xd1ced2, 0x79c5ec, 0x363535, 0x7aa7eb, 0xece7eb, 0x98a2d3, 0x141415, 0xa8a8c4, 0xcdd0d1, 0xaaa4c7, 0x3c3d3f, 0x9c96df, 0xeceae8, 0xa8a4ca, 0x1a1417, 0xa6a8c6, 0xcbc6c9, 0xa8a5bc, 0x4f504c, 0xaeaebb, 0xece7e9, 0xa8a6c6, 0x171b17, 0xa9aaca, 0xd5d0d2, 0xa7a4c7, 0x323135, 0xb491d6, 0xece5e7, 0xac80d6, 0x14151a, 0xbf6cd9, 0xc9c7ca, 0x956de0, 0x454545, 0x7e7ced, 0xe5e8eb, 0xa3a5bd, 0x151917, 0x8e83af, 0xd9d7d5, 0xaaa3b2, 0x433f3e, 0xa7a3b4, 0xe9eae9, 0xaca6b3, 0x181414, 0xa2a6c2, 0xd7d9d5, 0xb2a5b3, 0x423e3d, 0xaca7b5, 0xe7e9e7, 0xaca4ae, 0x151616, 0xaca7b1, 0xcbc5c4, 0x918ebd, 0x3a3b3c, 0xb2a6b0, 0xeae7ea, 0xd4b1d3, 0x1b161b, 0xcb98c6, 0xc3c1c1, 0xe5c7ee, 0x474644, 0xae88df, 0xeae8ea, 0xae61dd, 0x19181b, 0xb45da3, 0xd7d5d9, 0xc94b6e, 0x423f3f, 0xd2a188, 0xece9e7, 0xd28339, 0x161b1a, 0xc5a04b, 0xc6c4c3, 0xc17644, 0x2f2f33, 0xb55e51, 0xebe9e9, 0xc3984c, 0x171614, 0xae9d2e, 0xc5c7c7, 0xb6a660, 0x514e4e, 0xb0a556, 0xeaecea, 0xbe884e, 0x141914, 0xc46e3b, 0xdad4d7, 0xb58a43, 0x35343a, 0xb9a557, 0xe9ece5, 0xb6a355, 0x15161a, 0xb7a657, 0xc7c4c3, 0xb9a957, 0x36363b, 0xc5b037, 0xeae5e6, 0xbca54c, 0x171517, 0xb45b48, 0xcbcacb, 0xb05e51, 0x4c4b49, 0xb3a74e, 0xeae9e5, 0xb85d42, 0x171916, 0xb9a449, 0xd0d3d2, 0xbc5942, 0x393638, 0xbaa44b, 0xeae7e6, 0xb7a653, 0x161a19, 0xb45b45, 0xc4c3c7, 0xb7a149, 0x383d3f, 0xbb5939, 0xecece7, 0xb85840, 0x18181a, 0xb9a44e, 0xc4c6c9, 0xb2604c, 0x4a4f4e, 0xb9ab53, 0xeae9e9, 0xb55943, 0x141917, 0xb95d43, 0xd4d5d5, 0xb65741, 0x302f33, 0xb85740, 0xe7eaeb, 0xb5a551, 0x181917, 0xb05b50, 0xc9c5ca, 0xb5a64b, 0x444647, 0xb9a547, 0xeae5ea, 0xbb5d3f, 0x161516, 0xb5a852, 0xc4c6c4, 0xb15b4b, 0x434043, 0xb05e50, 0xe5e9eb, 0xb9a64b, 0x181b19, 0xba5c44, 0xd2d8d6, 0xb9a64f, 0x454445, 0xb6a04c, 0xe8e8e6, 0xb3a557, 0x191619, 0xb4a55a, 0xcac4c9, 0xaf5a4e, 0x36353a, 0xb9a954, 0xe6eaea, 0xb1564e, 0x141818, 0xb5a857, 0xc5c1c5, 0xafa35d, 0x454849, 0xb4a459, 0xe8ebe9, 0xc3b397, 0x141b14, 0xafa85a, 0xd8d6d7, 0xb3a35c, 0x43443f, 0xb3c15c, 0xe6e5e6, 0x9cd083, 0x17161b, 0x5abb50, 0xc3c4c2, 0xd2cb4c, 0x322f32], // this was NOT manually done; don't worry
-    [0xc8c8ff, 0x4cdbff, 0x692d7, 0x122c91, 0x371663, 0x600d39, 0x8a030f, 0xbf2600, 0xfb6200, 0xffc9a6, 0x000000]
-]
-const interiors = [0xff000000, 0xff000000, 0xff000000, 0xffffffff]
-const totalPalletes = palletes.length
-
-function setupPalletes() {
-    // Constants can be modified with push(), so this is quite all right.
-    for (var i = 0; i !== totalPalletes; i++) {
-        var pallete = palletes[i]
-        // Add transparency values
-        var start = pallete[0] ^ 0xff000000
-        pallete[0] = start
-        pallete.push(start)
-    }
-}
-
-setupPalletes()
-
-var palleteOverride = false
-var palleteID = 0
-var pallete = palletes[palleteID]
-var interior = interiors[0]
-var palleteLen = pallete.length - 1
-
-var pixels = Math.round(innerWidth * devicePixelRatio) * Math.round(innerHeight * devicePixelRatio)
-var wasmLength = pixels * 12 + palleteBytes2
-var flowRate = 0, flowAmount = 0
-var resizeW, resizeH
-var memory = new WebAssembly.Memory({
-    initial: Math.ceil(wasmLength / 65536),
-    maximum: 20000,
-    shared: true
-})
-var buffer = memory.buffer
-var imageData
-var imageDataBuffer
 
 // The justSwitched stuff is JUST for Firefox, which sometimes calls weird false resizes when you switch tabs or windows. (No longer required as the bug was fixed.)
 // var justSwitched = false
@@ -258,24 +681,30 @@ function resizeHandler() {
     canvas.style.width = previous.style.width = hidden.style.width = Math.ceil(innerWidth) + "px"
     canvas.style.height = previous.style.height = hidden.style.height = Math.ceil(innerHeight) + "px"
 
-    colorDataStart = pixels * 8 + palleteBytes2
+    colorDataStart = pixels * 8 + dataStart
     wasmLength = pixels * 4 + colorDataStart
     expandMemory(wasmLength)
 
     pixelItem = getMemory(1, 0, 32)
     palleteData = getMemory(palleteBytes * 0.25, palleteStart, 32)
     palleteData.set(pallete)
-    dataArray = getMemory(pixels * 2, palleteBytes2, -32)
+    dataArray = getMemory(pixels * 2, dataStart, -32)
     colorBytes = getMemory(pixels * 4, colorDataStart, -8) // In the WebAssembly script, it actually is 32-bit, but for getting this to render to the canvas, we pretend it's 8-bit and it works out.
     colorArray = getMemory(pixels, colorDataStart, 32)
-    dataBits = getMemory((wasmLength - palleteBytes2) * 0.25, palleteBytes2, 32)
+    dataBits = getMemory((wasmLength - dataStart) * 0.25, dataStart, 32)
 }
 
 function expandMemory(finalByte) {
-    var byteLength = buffer.byteLength
-    if (byteLength < finalByte) {
-        memory.grow(Math.ceil((finalByte - byteLength) / 65536))
-        buffer = memory.buffer
+    try {
+        var byteLength = buffer.byteLength
+        if (byteLength < finalByte) {
+            memory.grow(Math.ceil((finalByte - byteLength) / 65536))
+            buffer = memory.buffer
+        }
+    } catch (e) {
+        help.style.display = "unset"
+        help.innerHTML = 'Unfortunately, an error occured while adding more memory. This may be because of memory limitations; try adding ?maxMB=4096 to the start of the URL (no commas), or check the console if that doesn\'t work.<br><button onclick="help.removeAttribute(\'style\')" id="infoClose">Close</button>'
+        throw e
     }
 }
 
@@ -499,7 +928,7 @@ function update() {
             setPixel(0)
             rerender = false
         }
-        messageWebWorkers([1, juliaMode ? -fractalType : fractalType, w, h, 0, panX, panY, zoom, cost, palleteBytes2, colorDataStart, iterations, palleteStart, palleteLen, interior, renderMode, darkenEffect, speed, flowAmount, juliaX, juliaY]) // Message the parameters to be passed into each worker.
+        messageWebWorkers([1, juliaMode ? -fractalType : fractalType, w, h, 0, panX, panY, zoom, cost, dataStart, colorDataStart, iterations, palleteStart, palleteLen, interior, renderMode, darkenEffect, speed, flowAmount, juliaX, juliaY]) // Message the parameters to be passed into each worker.
     } else {
         line.removeAttribute("style")
         if (flowRate !== 0) {
@@ -514,7 +943,7 @@ function update() {
             rehandle = false
             needRender = false
             setPixel(0)
-            messageWebWorkers([2, pixels, 0, palleteBytes2, colorDataStart, palleteStart, palleteLen, interior, renderMode, darkenEffect, speed, flowAmount]) // Ultimately, this sends the parameters needed to the render function in each worker.
+            messageWebWorkers([2, pixels, 0, dataStart, colorDataStart, palleteStart, palleteLen, interior, renderMode, darkenEffect, speed, flowAmount]) // Ultimately, this sends the parameters needed to the render function in each worker.
         } else {
             requestAnimationFrame(update)
         }
@@ -570,7 +999,7 @@ function completeRender(animatedMode) { // animatedMode must be true in order fo
                     timeGuess = mainDiff * (1 - ratio) / ratio
                 }
             }
-            if (!pixelBreakdown) percent.textContent = (100 * ratio).toFixed(2) + "% finished (Taking " + timeToString(mainDiff) + ")\r\nEstimated time left: " + timeToString(timeGuess, true) + "\r\nPerformance: " + (cost * 0.001).toFixed(2) + "/thread (for " + workerCount + " " + (workerCount === 1 ? "thread" : "threads") + ").\nRendering took " + (performance.now() - imgTime).toFixed(2) + "ms (running at " + fps.toFixed(1) + "fps)"
+            if (!pixelBreakdown) percent.textContent = (100 * ratio).toFixed(2) + "% finished (Taking " + timeToString(mainDiff) + ")\r\nEstimated time left: " + timeToString(timeGuess, true) + "\r\nPerformance: " + (cost / wantedFPS / 1000).toFixed(2) + "/thread (for " + workerCount + " " + (workerCount === 1 ? "thread" : "threads") + ").\nRendering took " + (performance.now() - imgTime).toFixed(2) + "ms (running at " + fps.toFixed(1) + "fps)"
             if (pixelDiff >= 768) {
                 var brightness = Math.min(255, (pixelDiff >> 2) - 768)
                 var color = "rgb(" + brightness + ",255," + brightness + ")"
@@ -821,13 +1250,13 @@ function switchPallete() {
 }
 
 function customizePallete() {
-    var nextColors = decodePallete(newPallete.value.split(" "))
+    var nextColors = decodePallete(newPallete.value.split(" ")).slice(0, 25000)
     if (nextColors !== false) {
         flowAmount = 0
         palleteOverride = true
         pallete = nextColors
         palleteLen = pallete.length - 1
-        interior = 0xff000000 + pallete.pop()
+        interior = pallete.pop() ^ 0xff000000
         pallete.push(pallete[0])
         palleteData.set(pallete)
         clearBack()
@@ -912,7 +1341,7 @@ function changeDarkenEffect(newEffect) {
     if ((oldEffect === 1 && darkenEffect === 2) || (oldEffect === 2 && darkenEffect === 1)) {
         requestRender()
     } else if (darkenEffect === 0) {
-        getMemory(pixels, palleteBytes2 + pixels * 4, -32).fill(0) // Clear shading data
+        getMemory(pixels, dataStart + pixels * 4, -32).fill(0) // Clear shading data
         retry()
     } else {
         redo()
@@ -1161,7 +1590,7 @@ function loadInfo() {
     help.style.display = "unset"
 }
 
-// Color the buttons as needed
+// Color the buttons as needed, based on their ordering in the HTML
 colorButton(2, renderMode * 0.35)
 colorButton(3, darkenEffect / 3)
 colorButton(4, aliasingFactor * 3 - 3)

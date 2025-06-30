@@ -3,6 +3,9 @@ Welcome to my code that helps run my fractal viewer. All the code is licensed
 under GNU Affero General Public License v3. and is open source in case you want
 to use it! It is compiled into WASM, and the exported functions can then be
 executed by JavaScript.
+
+The code will use double for normal calculations then Bilinear Approximation and pertubation (not finished for all hybrids.)
+Memory regions image should be in the README (GitHub version at https://github.com/plasma4/FractalSky/)
 */
 
 #include <stdint.h>
@@ -35,11 +38,6 @@ static inline uint32_t mix(uint32_t colorStart, uint32_t colorEnd, uint32_t a) {
          0xff000000;
 }
 
-static inline float powThreeQuarters(float x) {
-  float t = sqrtf(x);
-  return t * sqrtf(t);
-}
-
 static inline uint32_t mixBlack(uint32_t colorStart, uint32_t a) {
   if (!a) return colorStart;
   uint32_t reverse = 0xff - a;
@@ -47,6 +45,11 @@ static inline uint32_t mixBlack(uint32_t colorStart, uint32_t a) {
          (((((colorStart >> 8) & 0xff) * reverse)) & -0xff) ^
          (((((colorStart >> 16) & 0xff) * reverse) << 8) & -0xffff) ^
          0xff000000;
+}
+
+static inline float powThreeQuarters(float x) {
+  float t = sqrtf(x);
+  return t * sqrtf(t);
 }
 
 static inline uint32_t toRGB(uint32_t r, uint32_t g, uint32_t b) {
@@ -63,9 +66,6 @@ static inline uint32_t getB(uint32_t color) { return (color >> 16) & 0xff; }
 // rendering mode
 static uint32_t mix2(uint32_t colorStart, uint32_t colorEnd, float a,
                      int renderMode, float darkenAmount) {
-  if (renderMode == 0) {
-    uint32_t color = mix(colorStart, colorEnd, a * darkenAmount * 255);
-  }
   uint32_t color = mix(colorStart, colorEnd, (a * sqrt(a)) * 255);
   return mixBlack(color, 200 * darkenAmount);
 }
@@ -81,7 +81,7 @@ uint32_t getPallete(float position, uint32_t *pallete, int length,
   uint32_t color;
   if (renderMode == 1) {
     color = mix(pallete[id], pallete[id + 1], mod * sqrtf(mod) * 255);
-    // Incredibly complicated, right?
+    // Incredibly complicated, with a lot of smoothing and layers going on.
     int newColor = toRGB(45.0f + 0.8f * getR(color), 45.0f + 0.8f * getG(color),
                          45.0f + 0.8f * getB(color));
     if (mod < 0.1f) {
@@ -173,27 +173,25 @@ uint32_t getPallete(float position, uint32_t *pallete, int length,
   return mixBlack(color, 200.0f * darkenAmount);
 }
 
-// Really efficient (wouldn't be used if WASM supported logarithms; reduces
-// overhead)
+// Rather efficient (WASM doesn't support logarithms and a near-accurate
+// approximation is okay in this case.)
 static inline float flog2(float n) {
-  union {
-    float number;
-    uint32_t integer;
-  } firstUnion = {n};
-  union {
-    uint32_t integer;
-    float number;
-  } secondUnion = {(firstUnion.integer & 0x7fffff) | 0x3f000000};
-  float y = firstUnion.integer;
-  y *= 1.19209289e-7f;
+  // Use bit_cast to perform the type-pun. This is guaranteed to be safe!
+  uint32_t intRepresentation = __builtin_bit_cast(uint32_t, n);
 
-  return y - 124.225517f - 1.4980303f * secondUnion.number -
-         1.72588f / (0.35208873f + secondUnion.number);
+  uint32_t t = (intRepresentation & 0x7fffff) | 0x3f000000;
+  float castedFloat = __builtin_bit_cast(float, t);
+
+  float y = intRepresentation;  // The integer value is used for scaling
+  y *= 1.192092896e-7f;
+
+  return y - 124.2255173f - 1.498030305f * castedFloat -
+         1.725880027f / (0.3520887196f + castedFloat);
 }
 
-static inline float secondLog(float n) {
+static inline float doubleLogSqrt(float n) {
   // Simpler to create a function for this, as it's used so much
-  return flog2(flog2(n));
+  return flog2(flog2(sqrtf(n)));
 }
 
 static inline float cosq(float x) {
@@ -228,7 +226,10 @@ float mand(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      // The reason why we have such a high exit value (2000) is because we can
+      // use a double logarithm of the absolute distance (sqrt handled inside
+      // the doubleLogSqrt function) to make the iterations look smooth.
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -246,8 +247,10 @@ float mand3(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.6309297535714575f;
+      // There's a magic number here for log3. (I probably didn't need to do
+      // this since -O3 would optimize this out to a constant anyway, but it is
+      // what it is.)
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
   }
@@ -260,12 +263,14 @@ float mand4(int iterations, double x, double y, double cx, double cy) {
   double sr = r * r;
   double si = i * i;
   for (int n = 1; n <= iterations; n++) {
-    i = 4.0 * (sr * r * i - r * si * i) + cy;
+    i = 4.0 * (sr * r * i - r * si * i) +
+        cy;  // As the powers get higher, you'll notice more weird optimization
+             // tactics. sr = real ** 2, fr = real ** 4, same for si and fi.
     r = sr * (sr - 6.0 * si) + si * si + cx;
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si))) * 0.5f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
   }
@@ -285,8 +290,7 @@ float mand5(int iterations, double x, double y, double cx, double cy) {
     si = i * i;
     fi = si * si;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.43067655807339306f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.43067655807339306f;
       return result;
     }
   }
@@ -306,8 +310,7 @@ float mand6(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.38685280723454163f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.38685280723454163f;
       return result;
     }
     fr = sr * sr;
@@ -329,8 +332,7 @@ float mand7(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.3562071871080222f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.3562071871080222f;
       return result;
     }
     fr = sr * sr;
@@ -350,7 +352,7 @@ float ship(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -368,8 +370,7 @@ float ship3(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.6309297535714575f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
   }
@@ -387,7 +388,7 @@ float ship4(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si))) * 0.5f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
   }
@@ -405,7 +406,7 @@ float celt(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -424,7 +425,7 @@ float prmb(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -445,7 +446,7 @@ float buff(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -463,7 +464,7 @@ float tric(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -488,7 +489,7 @@ float mbbs(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -513,8 +514,7 @@ float mbbs3(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.6309297535714575f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
   }
@@ -539,7 +539,7 @@ float mbbs4(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si))) * 0.5f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
   }
@@ -565,7 +565,7 @@ float mandS(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
       double ui = (i * dr - r * di) / sqm;
@@ -598,8 +598,7 @@ float mand3S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.6309297535714575f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
       double ui = (i * dr - r * di) / sqm;
@@ -634,7 +633,7 @@ float mand4S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si))) * 0.5f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
       double ui = (i * dr - r * di) / sqm;
@@ -669,8 +668,7 @@ float mand5S(int iterations, double x, double y, double cx, double cy,
     si = i * i;
     fi = si * si;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.43067655807339306f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.43067655807339306f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
       double ui = (i * dr - r * di) / sqm;
@@ -699,8 +697,7 @@ float mand6S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.38685280723454163f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.38685280723454163f;
       return result;
     }
     fr = sr * sr;
@@ -723,8 +720,7 @@ float mand7S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.3562071871080222f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.3562071871080222f;
       return result;
     }
     fr = sr * sr;
@@ -750,7 +746,7 @@ float shipS(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
       double ui = (i * dr - r * di) / sqm;
@@ -783,8 +779,7 @@ float ship3S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.6309297535714575f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
       double ui = (i * dr - r * di) / sqm;
@@ -818,7 +813,7 @@ float ship4S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si))) * 0.5f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
       double ui = (i * dr - r * di) / sqm;
@@ -845,7 +840,7 @@ float celtS(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -865,7 +860,7 @@ float prmbS(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -887,7 +882,7 @@ float buffS(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -906,7 +901,7 @@ float tricS(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -932,7 +927,7 @@ float mbbsS(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
   }
@@ -958,8 +953,7 @@ float mbbs3S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.6309297535714575f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
   }
@@ -985,7 +979,7 @@ float mbbs4S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si))) * 0.5f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
   }
@@ -1006,7 +1000,7 @@ float mandS2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1032,8 +1026,7 @@ float mand3S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.6309297535714575f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1059,7 +1052,7 @@ float mand4S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si))) * 0.5f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1087,8 +1080,7 @@ float mand5S2(int iterations, double x, double y, double cx, double cy,
     si = i * i;
     fi = si * si;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.43067655807339306f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.43067655807339306f;
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1116,8 +1108,7 @@ float mand6S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.38685280723454163f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.38685280723454163f;
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1147,8 +1138,7 @@ float mand7S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.3562071871080222f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.3562071871080222f;
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1178,7 +1168,7 @@ float shipS2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1204,8 +1194,7 @@ float ship3S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.6309297535714575f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1231,7 +1220,7 @@ float ship4S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si))) * 0.5f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1257,7 +1246,7 @@ float celtS2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1284,7 +1273,7 @@ float prmbS2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1313,7 +1302,7 @@ float buffS2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1339,7 +1328,7 @@ float tricS2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1372,7 +1361,7 @@ float mbbsS2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si)));
+      float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1405,8 +1394,7 @@ float mbbs3S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result =
-          (float)n - (secondLog(sqrtf(sr + si))) * 0.6309297535714575f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1439,7 +1427,7 @@ float mbbs4S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     if (sr + si > 2000.0) {
-      float result = (float)n - (secondLog(sqrtf(sr + si))) * 0.5f;
+      float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double ur = r + i;
       double ui = i - r;
       double norm = sqrt(ur * ur + ui * ui);
@@ -1504,7 +1492,7 @@ extern void render(int limit, int *pixelP, float *iters, uint32_t *colors,
  * @brief Renders a fractal image to a pixel buffer using multithreading.
  * Iterates through pixels, calculates fractal values, and colors pixels based
  * on parameters.
- * Make sure to also read the JS code to understand all this!
+ * Make sure to also read the JS code to understand constants/inputs!
  *
  * @param type          [in]  int             Fractal type (0=Mandelbrot)
  * @param w             [in]  int             Image width in pixels
@@ -1568,10 +1556,11 @@ extern int run(int type, int w, int h, int *pixelP, double posX, double posY,
 
   // This uses a do...while rather than a simple while, so it doesn't increment
   // the first time.
-  do {
+  while (true) {
+    // Use the atomic for threadsafe checking
     int i = pixelAtomic->fetch_add(1, std::memory_order_relaxed);
     if (i >= limit) {
-      break;  // important safety check
+      break; 
     }
     double x = i % w;
     double y = i / w;
@@ -1834,7 +1823,8 @@ extern int run(int type, int w, int h, int *pixelP, double posX, double posY,
     if (score >= max) {
       return i;
     }
-  } while (pixelAtomic->load(std::memory_order_relaxed) < limit);
+  }
+
   // Tell the script that it has completed!
   return -1;
 }
