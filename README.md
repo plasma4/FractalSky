@@ -1,8 +1,10 @@
 ## FractalSky
-A fractal viewer optimized for the web. Supports a variety of features, utilizing multicore processing when possible, and functioning. It automatically falls back to a version without SharedArrayBuffer and uses ServiceWorkers to make it work offline in most HTTPS settings and browsers.
+A fractal viewer optimized for the web. Supports a variety of features, utilizing multicore processing when possible, and functioning. It automatically falls back to a version without `SharedArrayBuffer` and uses `ServiceWorkers` to make it work offline in most HTTPS settings and browsers.
 **View online at https://fractalsky.netlify.app/** and take a look at the options with the Info button. When a new version appears you may need to do a force refresh (Ctrl/Cmd+Shift+R).
 
 All code is under AGPL v3. If you're looking for how the C++ WebAssembly works and information on memory regions, check fractal.c (which you should be able to access by replacing this URL's .html with .c); to optimize it uses a lot of hardcoded memory regions. Otherwise, main.js and worker.js are the JS sections.
+
+Customize the number of WebWorkers by adding `?workers=8`, changing the value as needed (ignored when `SharedArrayBuffer` is not supported).
 
 TODO:
 - Decimal (fixed-point) algorithms
@@ -20,7 +22,7 @@ KNOWN ISSUES:
 By default, the memory maximum is 16000 pages (or 1,250 MB by default). You can add the `?maxMB=4096` URL parameter if you must use more memory and lower the number as needed.
 
 ## How the algorithm works
-(This has not been implemented yet!)
+**(This has not been implemented yet!)**
 The algorithm for the fractal program uses pertubation and bilinear approximation when the zoom (in this case, the difference per pixel) is less than 2^-48.
 
 ### Local installation instructions
