@@ -4,14 +4,13 @@ under GNU Affero General Public License v3. and is open source in case you want
 to use it! It is compiled into WASM, and the exported functions can then be
 executed by JavaScript.
 
-The code will use double for normal calculations then Bilinear Approximation and pertubation (not finished for all hybrids.)
-Memory regions image should be in the README (GitHub version at https://github.com/plasma4/FractalSky/)
+The code will use double for normal calculations then Bilinear Approximation and
+pertubation (not finished for all hybrids.) Memory regions image should be in
+the README (GitHub version at https://github.com/plasma4/FractalSky/)
 */
 
+#include <algorithm>
 #include <stdint.h>
-
-#include <atomic>
-#include <new>
 
 // We don't need to include math.h if we add these functions.
 float sqrtf(float x);
@@ -22,29 +21,62 @@ double floor(double x);
 #define sqrt __builtin_sqrt
 #define floor __builtin_floor
 
-static inline double absD(double x) { return (x < 0.0) ? -x : x; }
+#ifndef likely
+#define likely(x) __builtin_expect(!!(x), 1)
+#endif
+#ifndef unlikely
+#define unlikely(x) __builtin_expect(!!(x), 0)
+#endif
+
+namespace Mem {
+// Pixel counter
+constexpr uint32_t AtomicCounter = 0;
+// Amount of limbs (for Decimal use), set to 0 for no limbs
+constexpr uint32_t LimbCount = 8;
+
+// Lookup tables (Shading is 64KB and PaletteData is 1000KB)
+constexpr uint32_t ShadingLUT = 32;
+constexpr uint32_t PaletteData = ShadingLUT + 65536;
+// 16 Decimal instances use 32 uint64_t's for 256 bytes/Decimal
+constexpr uint32_t DecimalStorage = PaletteData + 100000;
+
+// This is where the per-pixel data starts.
+constexpr uint32_t PixelDataStart = DecimalStorage + 4096;
+} // namespace Mem
+
+constexpr int CALC_CHUNK_SIZE = 32;
+constexpr int RENDER_CHUNK_SIZE = 4096;
+const double BAILOUT_VALUE = 10000.0;
+
+static inline double absD(double x) { return std::fabs(x); }
 
 // Fast mixing (smoothing) of 32-bit colors
 static inline uint32_t mix(uint32_t colorStart, uint32_t colorEnd, uint32_t a) {
   uint32_t reverse = 0xff - a;
-  return ((((colorStart & 0xff) * reverse + (colorEnd & 0xff) * a) >> 8)) ^
-         (((((colorStart >> 8) & 0xff) * reverse +
-            ((colorEnd >> 8) & 0xff) * a)) &
-          -0xff) ^
-         (((((colorStart >> 16) & 0xff) * reverse +
-            ((colorEnd >> 16) & 0xff) * a)
-           << 8) &
-          -0xffff) ^
-         0xff000000;
+  uint32_t r = (((colorStart & 0xff) * reverse + (colorEnd & 0xff) * a) >> 8);
+  uint32_t g =
+      ((((colorStart >> 8) & 0xff) * reverse + ((colorEnd >> 8) & 0xff) * a) >>
+       8)
+      << 8;
+  uint32_t b = ((((colorStart >> 16) & 0xff) * reverse +
+                 ((colorEnd >> 16) & 0xff) * a) >>
+                8)
+               << 16;
+  return r ^ g ^ b ^ 0xff000000;
 }
 
 static inline uint32_t mixBlack(uint32_t colorStart, uint32_t a) {
-  if (!a) return colorStart;
+  if (!a) {
+    return colorStart;
+  }
+
   uint32_t reverse = 0xff - a;
-  return ((((colorStart & 0xff) * reverse) >> 8)) ^
-         (((((colorStart >> 8) & 0xff) * reverse)) & -0xff) ^
-         (((((colorStart >> 16) & 0xff) * reverse) << 8) & -0xffff) ^
-         0xff000000;
+  uint32_t r = (((colorStart & 0xff) * reverse) >> 8);
+  uint32_t g = ((((colorStart >> 8) & 0xff) * reverse) >> 8) << 8;
+  uint32_t b = ((((colorStart >> 16) & 0xff) * reverse) >> 8) << 16;
+
+  // Alpha channel is fixed at 0xFF000000 (opaque)
+  return r ^ g ^ b ^ 0xff000000;
 }
 
 static inline float powThreeQuarters(float x) {
@@ -70,17 +102,15 @@ static uint32_t mix2(uint32_t colorStart, uint32_t colorEnd, float a,
   return mixBlack(color, 200 * darkenAmount);
 }
 
-// Get a smoothed, looped, index of a pallete
-uint32_t getPallete(float position, uint32_t *pallete, int length,
+// Get a smoothed, looped, index of a palette
+uint32_t getPalette(float position, uint32_t *palette, int length,
                     int renderMode, float darkenAmount) {
-  // Pallete used by handlePixels (last element=first element for looping).
-  // Interestingly, you can get the hex representations with the middle six
-  // letters (#a00a0a for the first one, for example)
+  // Palette used by handlePixels (last element=first element for looping).
   int id = (int)position % length;
   float mod = position - ((int)position / length) * length - (float)id;
   uint32_t color;
   if (renderMode == 1) {
-    color = mix(pallete[id], pallete[id + 1], mod * sqrtf(mod) * 255);
+    color = mix(palette[id], palette[id + 1], mod * sqrtf(mod) * 255);
     // Incredibly complicated, with a lot of smoothing and layers going on.
     int newColor = toRGB(45.0f + 0.8f * getR(color), 45.0f + 0.8f * getG(color),
                          45.0f + 0.8f * getB(color));
@@ -113,11 +143,11 @@ uint32_t getPallete(float position, uint32_t *pallete, int length,
           color = newColor;
         }
       }
-      color = mixBlack(
-          color,
-          200.0f - powThreeQuarters(mod > 0.99f ? (250.0f * mod - 247.5f)
-                                                : (2.5f * (1.0f - mod))) *
-                       200);
+      color = mixBlack(color,
+                       200.0f - powThreeQuarters(mod > 0.99f
+                                                     ? (250.0f * mod - 247.5f)
+                                                     : (2.5f * (1.0f - mod))) *
+                                    200);
     } else if (mod > 0.2f && mod < 0.3f) {
       if (mod < 0.225f) {
         color = mix(color, newColor, (mod - 0.2f) * 100.0f);
@@ -136,7 +166,7 @@ uint32_t getPallete(float position, uint32_t *pallete, int length,
       }
     }
   } else if (renderMode == 2) {
-    color = mix(pallete[id], pallete[id + 1], mod * 255.0f);
+    color = mix(palette[id], palette[id + 1], mod * 255.0f);
     float sectionF = mod * 5.0f;
     int section = (int)sectionF;
     float mod2 = sectionF - (int)sectionF;
@@ -153,8 +183,8 @@ uint32_t getPallete(float position, uint32_t *pallete, int length,
       }
     }
   } else if (renderMode == 3) {
-    uint32_t p1 = pallete[id];
-    uint32_t p2 = pallete[id + 1];
+    uint32_t p1 = palette[id];
+    uint32_t p2 = palette[id + 1];
     color = mix(p1, p2, mod * 255.0f);
     float sectionF = mod * 3.0f;
     int section = (int)sectionF;
@@ -168,7 +198,7 @@ uint32_t getPallete(float position, uint32_t *pallete, int length,
       }
     }
   } else {
-    color = mix(pallete[id], pallete[id + 1], mod * 255.0f);
+    color = mix(palette[id], palette[id + 1], mod * 255.0f);
   }
   return mixBlack(color, 200.0f * darkenAmount);
 }
@@ -182,7 +212,7 @@ static inline float flog2(float n) {
   uint32_t t = (intRepresentation & 0x7fffff) | 0x3f000000;
   float castedFloat = __builtin_bit_cast(float, t);
 
-  float y = intRepresentation;  // The integer value is used for scaling
+  float y = intRepresentation; // The integer value is used for scaling
   y *= 1.192092896e-7f;
 
   return y - 124.2255173f - 1.498030305f * castedFloat -
@@ -225,7 +255,7 @@ float mand(int iterations, double x, double y, double cx, double cy) {
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       // The reason why we have such a high exit value (2000) is because we can
       // use a double logarithm of the absolute distance (sqrt handled inside
       // the doubleLogSqrt function) to make the iterations look smooth.
@@ -246,7 +276,7 @@ float mand3(int iterations, double x, double y, double cx, double cy) {
     i = i * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       // There's a magic number here for log3. (I probably didn't need to do
       // this since -O3 would optimize this out to a constant anyway, but it is
       // what it is.)
@@ -264,12 +294,12 @@ float mand4(int iterations, double x, double y, double cx, double cy) {
   double si = i * i;
   for (int n = 1; n <= iterations; n++) {
     i = 4.0 * (sr * r * i - r * si * i) +
-        cy;  // As the powers get higher, you'll notice more weird optimization
-             // tactics. sr = real ** 2, fr = real ** 4, same for si and fi.
+        cy; // As the powers get higher, you'll notice more weird optimization
+            // tactics. sr = real ** 2, fr = real ** 4, same for si and fi.
     r = sr * (sr - 6.0 * si) + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
@@ -289,7 +319,7 @@ float mand5(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     fi = si * si;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.43067655807339306f;
       return result;
     }
@@ -309,7 +339,7 @@ float mand6(int iterations, double x, double y, double cx, double cy) {
     r = sr * (fr + 15.0 * fi) - si * (15.0 * fr + fi) + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.38685280723454163f;
       return result;
     }
@@ -331,7 +361,7 @@ float mand7(int iterations, double x, double y, double cx, double cy) {
     i = i * (fr * (7.0 * sr - 35.0 * si) + fi * (21.0 * sr - si)) + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.3562071871080222f;
       return result;
     }
@@ -351,7 +381,7 @@ float ship(int iterations, double x, double y, double cx, double cy) {
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -369,7 +399,7 @@ float ship3(int iterations, double x, double y, double cx, double cy) {
     i = absD(i) * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
@@ -387,7 +417,7 @@ float ship4(int iterations, double x, double y, double cx, double cy) {
     r = sr * sr - 6.0 * sr * si + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
@@ -405,7 +435,7 @@ float celt(int iterations, double x, double y, double cx, double cy) {
     r = absD(sr - si) + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -424,7 +454,7 @@ float prmb(int iterations, double x, double y, double cx, double cy) {
     i = -tr - cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -445,7 +475,7 @@ float buff(int iterations, double x, double y, double cx, double cy) {
     i = tr - i + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -463,7 +493,7 @@ float tric(int iterations, double x, double y, double cx, double cy) {
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -488,7 +518,7 @@ float mbbs(int iterations, double x, double y, double cx, double cy) {
     }
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -513,7 +543,7 @@ float mbbs3(int iterations, double x, double y, double cx, double cy) {
     }
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
@@ -538,7 +568,7 @@ float mbbs4(int iterations, double x, double y, double cx, double cy) {
     }
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
@@ -564,7 +594,7 @@ float mandS(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -573,7 +603,7 @@ float mandS(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : (t * 0.4f);
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -597,7 +627,7 @@ float mand3S(int iterations, double x, double y, double cx, double cy,
     i = i * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -606,7 +636,7 @@ float mand3S(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : (t * 0.4f);
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -632,7 +662,7 @@ float mand4S(int iterations, double x, double y, double cx, double cy,
     r = sr * (sr - 6.0 * si) + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -641,7 +671,7 @@ float mand4S(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : (t * 0.4f);
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -667,7 +697,7 @@ float mand5S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     fi = si * si;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.43067655807339306f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -676,7 +706,7 @@ float mand5S(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : (t * 0.4f);
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -696,7 +726,7 @@ float mand6S(int iterations, double x, double y, double cx, double cy,
     r = sr * (fr + 15.0 * fi) - si * (15.0 * fr + fi) + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.38685280723454163f;
       return result;
     }
@@ -719,7 +749,7 @@ float mand7S(int iterations, double x, double y, double cx, double cy,
     i = i * (fr * (7.0 * sr - 35.0 * si) + fi * (21.0 * sr - si)) + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.3562071871080222f;
       return result;
     }
@@ -745,7 +775,7 @@ float shipS(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -754,7 +784,7 @@ float shipS(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : (t * 0.4f);
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -778,7 +808,7 @@ float ship3S(int iterations, double x, double y, double cx, double cy,
     i = absD(i) * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -787,7 +817,7 @@ float ship3S(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : (t * 0.4f);
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -812,7 +842,7 @@ float ship4S(int iterations, double x, double y, double cx, double cy,
     r = sr * sr - 6.0 * sr * si + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -821,7 +851,7 @@ float ship4S(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : (t * 0.4f);
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -839,7 +869,7 @@ float celtS(int iterations, double x, double y, double cx, double cy,
     r = absD(sr - si) + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -859,7 +889,7 @@ float prmbS(int iterations, double x, double y, double cx, double cy,
     i = -tr - y;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -881,7 +911,7 @@ float buffS(int iterations, double x, double y, double cx, double cy,
     i = tr - i + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -900,7 +930,7 @@ float tricS(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -926,7 +956,7 @@ float mbbsS(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -952,7 +982,7 @@ float mbbs3S(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
@@ -978,7 +1008,7 @@ float mbbs4S(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
@@ -999,7 +1029,7 @@ float mandS2(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1007,7 +1037,7 @@ float mandS2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1025,7 +1055,7 @@ float mand3S2(int iterations, double x, double y, double cx, double cy,
     i = i * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double ur = r + i;
       double ui = i - r;
@@ -1033,7 +1063,7 @@ float mand3S2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1051,7 +1081,7 @@ float mand4S2(int iterations, double x, double y, double cx, double cy,
     r = sr * (sr - 6.0 * si) + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double ur = r + i;
       double ui = i - r;
@@ -1059,7 +1089,7 @@ float mand4S2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1079,7 +1109,7 @@ float mand5S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     fi = si * si;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.43067655807339306f;
       double ur = r + i;
       double ui = i - r;
@@ -1087,7 +1117,7 @@ float mand5S2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1107,7 +1137,7 @@ float mand6S2(int iterations, double x, double y, double cx, double cy,
     r = sr * (fr + 15.0 * fi) - si * (15.0 * fr + fi) + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.38685280723454163f;
       double ur = r + i;
       double ui = i - r;
@@ -1115,7 +1145,7 @@ float mand6S2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
     fr = sr * sr;
@@ -1137,7 +1167,7 @@ float mand7S2(int iterations, double x, double y, double cx, double cy,
     i = i * (fr * (7.0 * sr - 35.0 * si) + fi * (21.0 * sr - si)) + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.3562071871080222f;
       double ur = r + i;
       double ui = i - r;
@@ -1145,7 +1175,7 @@ float mand7S2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
     fr = sr * sr;
@@ -1167,7 +1197,7 @@ float shipS2(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1175,7 +1205,7 @@ float shipS2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1193,7 +1223,7 @@ float ship3S2(int iterations, double x, double y, double cx, double cy,
     i = absD(i) * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double ur = r + i;
       double ui = i - r;
@@ -1201,7 +1231,7 @@ float ship3S2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1219,7 +1249,7 @@ float ship4S2(int iterations, double x, double y, double cx, double cy,
     r = sr * sr - 6.0 * sr * si + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double ur = r + i;
       double ui = i - r;
@@ -1227,7 +1257,7 @@ float ship4S2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1245,7 +1275,7 @@ float celtS2(int iterations, double x, double y, double cx, double cy,
     r = absD(sr - si) + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1253,7 +1283,7 @@ float celtS2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1272,7 +1302,7 @@ float prmbS2(int iterations, double x, double y, double cx, double cy,
     i = -tr - y;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1280,7 +1310,7 @@ float prmbS2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1301,7 +1331,7 @@ float buffS2(int iterations, double x, double y, double cx, double cy,
     i = tr - i + cy;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1309,7 +1339,7 @@ float buffS2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1327,7 +1357,7 @@ float tricS2(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1335,7 +1365,7 @@ float tricS2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1360,7 +1390,7 @@ float mbbsS2(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1368,7 +1398,7 @@ float mbbsS2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1393,7 +1423,7 @@ float mbbs3S2(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double ur = r + i;
       double ui = i - r;
@@ -1401,7 +1431,7 @@ float mbbs3S2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1426,7 +1456,7 @@ float mbbs4S2(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (sr + si > 2000.0) {
+    if (unlikely(sr + si > BAILOUT_VALUE)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double ur = r + i;
       double ui = i - r;
@@ -1434,7 +1464,7 @@ float mbbs4S2(int iterations, double x, double y, double cx, double cy,
       ur /= norm;
       ui /= norm;
       float t = (ur + ui) * 0.7071067811865475f + 1.5f;
-      *ptr = t <= 0 ? 0 : t * 0.4f;
+      *ptr = fmaxf(0.0f, t) * 0.4f;
       return result;
     }
   }
@@ -1444,158 +1474,147 @@ float mbbs4S2(int iterations, double x, double y, double cx, double cy,
 // Keep C export names
 extern "C" {
 // Simply renders the output; no fuss.
-extern void render(int limit, int *pixelP, float *iters, uint32_t *colors,
-                   uint32_t *pallete, int palleteLength, uint32_t interiorColor,
-                   int renderMode, int darkenEffect, float speed,
-                   float flowAmount) {
-  void *pixelP_void = static_cast<void *>(pixelP);
-  std::atomic<int> *pixelAtomic = new (pixelP_void) std::atomic<int>(*pixelP);
-  float *itersPtr = iters;
-  float speed1 = sqrtf(sqrtf(speed));
-  float speed2 = 0.035f * speed;
-  int finalChunk = (limit >> 12) - 1;
-  do {
-    // Use chunks of 4,096 pixels
-    int i = pixelAtomic->fetch_add(1, std::memory_order_relaxed);
-    int current = 4096 * i;
-    int cap = current + 4096;
-    if (i >= finalChunk) {
-      if (i == finalChunk) {
-        cap = limit - 1;
-      } else {
-        break;
-      }
+void render(int pixels, int paletteLen, uint32_t interiorColor, int renderMode,
+            int darkenEffect, float speed, float flowAmount) {
+  // "What is the current pixel we are working on?"
+  // `pixelAtomic` is the atomic counter for chunks, located at
+  // `Mem::AtomicCounter`.
+  int *pixelAtomic = reinterpret_cast<int *>(Mem::AtomicCounter);
+
+  // `iters` points to the start of the iteration data in `Mem::PixelDataStart`.
+  float *iters = reinterpret_cast<float *>(Mem::PixelDataStart);
+  // `shading` data immediately follows `iters` data in memory.
+  float *shading = iters + pixels;
+  // `colors` (RGBA data) immediately follows `shading` data in memory.
+  uint32_t *colors = reinterpret_cast<uint32_t *>(shading + pixels);
+  // `palette` data is located at `Mem::PaletteData`.
+  uint32_t *palette = reinterpret_cast<uint32_t *>(Mem::PaletteData);
+
+  const float speed1 = sqrtf(sqrtf(speed));
+  const float speed2 = 0.035f * speed;
+  const int totalChunks = (pixels + RENDER_CHUNK_SIZE - 1) / RENDER_CHUNK_SIZE;
+
+  // This is the robust, thread-safe loop structure.
+  while (true) {
+    // Use the compiler built-in for the atomic operation.
+    int chunkIndex = __atomic_fetch_add(pixelAtomic, 1, __ATOMIC_RELAXED);
+    if (unlikely(chunkIndex >= totalChunks)) {
+      break;
     }
-    do {
-      float *ptr = itersPtr + limit + current;
-      float t = iters[current];
+
+    const int start = chunkIndex * RENDER_CHUNK_SIZE;
+    const int end = std::min(start + RENDER_CHUNK_SIZE, pixels);
+
+    for (int i = start; i < end; ++i) {
+      float t = iters[i];
+
+      // This is your original, correct coloring logic.
       if (t == -999.0f) {
-        colors[current] = interiorColor;
+        colors[i] = interiorColor;
       } else if (t == 1.0f) {
         int index = flowAmount;
-        int indexModulo = index % palleteLength;
-        float l = *ptr;
-        colors[current] = mix2(pallete[indexModulo], pallete[indexModulo + 1],
-                               flowAmount - index, renderMode,
-                               darkenEffect == 2 ? 1.0f - l : l);
+        int indexModulo = index % paletteLen;
+        float l = shading[i]; // Correctly read from the shading buffer
+        colors[i] = mix2(palette[indexModulo], palette[indexModulo + 1],
+                         flowAmount - index, renderMode,
+                         darkenEffect == 2 ? 1.0f - l : l);
       } else {
-        float l = *ptr;
-        colors[current] = getPallete(
-            flog2(t) * speed1 + (t - 1) * speed2 + flowAmount, pallete,
-            palleteLength, renderMode, darkenEffect == 2 ? 1.0f - l : l);
+        float l = shading[i]; // Correctly read from the shading buffer
+        colors[i] = getPalette(
+            flog2(t) * speed1 + (t - 1) * speed2 + flowAmount, palette,
+            paletteLen, renderMode, darkenEffect == 2 ? 1.0f - l : l);
       }
-    } while (++current != cap);
-  } while (pixelAtomic->load(std::memory_order_relaxed) < finalChunk);
+    }
+  }
 }
 
 /**
- * @brief Renders a fractal image to a pixel buffer using multithreading.
- * Iterates through pixels, calculates fractal values, and colors pixels based
- * on parameters.
- * Make sure to also read the JS code to understand constants/inputs!
+ * @brief This is the main function! It renders a fractal image to a pixel
+ * buffer using multithreading. Iterates through pixels, calculates fractal
+ * values, and adds pixel data. Make sure to also read the JS code to understand
+ * constants/inputs!
  *
- * @param type          [in]  int             Fractal type (0=Mandelbrot)
+ * @param type          [in]  int             Fractal type (1 is Mandelbrot,
+ * negative means Julia set)
  * @param w             [in]  int             Image width in pixels
  * @param h             [in]  int             Image height in pixels
- * @param pixelP        [in,out] int*          Pixel buffer (reinterpreted as
- atomic for threads).
  * @param posX          [in]  double          Horizontal position of the
- fractal.
+ * fractal.
  * @param posY          [in]  double          Vertical position of the fractal
  * @param zoom          [in]  double          Zoom level of the fractal
  * @param max           [in]  int             Maximum calculation 'score' before
  * early exit.
- * @param iters         [in,out] float*        Iteration counts buffer
- * (pre-calculated or output).
- * @param colors        [out] uint32_t*       Output color buffer (RGBA)
- * @param iterations    [in]  int             Maximum iterations per fractal
- * point.
- * @param pallete       [in]  uint32_t*       Color palette array pointer
- * @param palleteLength [in]  int             Length of the color palette
+ * @param iterations    [in]  int             Maximum iterations per pixel
+ * @param paletteLen    [in]  int             Total length of the color palette
  * @param interiorColor [in]  uint32_t        Color for pixels that do not
- escape.
+ * escape.
  * @param renderMode    [in]  int             Rendering mode for palette
  * application.
  * @param darkenEffect  [in]  int             Darkening/shading effect mode
  * @param speed         [in]  float           Palette color cycling speed
  * @param flowAmount    [in]  float           Palette flow/pan amount
- * @param data1         [in]  double          Additional data
- * @param data2         [in]  double          Additional data
+ * @param data1         [in]  double          Additional data (Julia X)
+ * @param data2         [in]  double          Additional data (Julia Y)
  *
  * @return              int             -1 for completion, pixel index if not
- fully completed.
+ * fully completed.
  */
-extern int run(int type, int w, int h, int *pixelP, double posX, double posY,
-               double zoom, int max, float *iters, uint32_t *colors,
-               int iterations, uint32_t *pallete, int palleteLength,
-               uint32_t interiorColor, int renderMode, int darkenEffect,
-               float speed, float flowAmount, double data1, double data2) {
-  // The boring stuff is here! We use 32-bit RGBA uint32_t instead of 8-bit
-  // numbers for the coloring, because it's simpler and doesn't slow down JS at
-  // all (we can access it with Uint8ClampedArray)
+int run(int type, int w, int h, double posX, double posY,
+        double zoom, int max, int iterations, int paletteLen,
+        uint32_t interiorColor, int renderMode, int darkenEffect, float speed,
+        float flowAmount, double data1, double data2) {
+  // "What is the current pixel we are working on?"
+  int *pixelAtomic = reinterpret_cast<int *>(Mem::AtomicCounter);
+  // Total pixels to work on
+  const int pixels = w * h;
 
-  void *pixelP_void = static_cast<void *>(pixelP);
-  std::atomic<int> *pixelAtomic = new (pixelP_void) std::atomic<int>(*pixelP);
+  // "What is the memory address of the data for the palette of colors to use?"
+  uint32_t *palette = reinterpret_cast<uint32_t *>(Mem::PaletteData);
+  // "What is the memory address of the data for iterations before exiting?"
+  float *iters = reinterpret_cast<float *>(Mem::PixelDataStart);
+  // "What is the memory address of the data for shading?"
+  float *shading = iters + pixels;
+  // "What is the memory address of the RGBA data for rendering?"
+  uint32_t *colors = reinterpret_cast<uint32_t *>(shading + pixels);
+
+  const float speed1 = sqrtf(sqrtf(speed));
+  const float speed2 = 0.035f * speed;
   int score = 0;
-  int limit = w * h;
-  int biggerIterations = iterations + 2;
+
+  // Capture the job ID at the start. This worker is now locked to this job.
+  const int biggerIterations = iterations + 2;
+  const int totalChunks = (pixels + CALC_CHUNK_SIZE - 1) / CALC_CHUNK_SIZE;
 
   // Find the absolute value
-  int absType = type;
-  uint32_t temp = absType >> 31;
-  absType ^= temp;
-  absType += temp & 1;
+  int absType = (type < 0) ? -type : type;
+  const bool isJulia = (type < 0);
 
-  // Pre-calculate speed constants for faster renderings
-  float speed1 = sqrtf(sqrtf(speed));
-  float speed2 = 0.035f * speed;
-  float *itersPtr = iters;
-
-  double coordinateX2 = data1;
-  double coordinateY2 = data2;
-
-  // This uses a do...while rather than a simple while, so it doesn't increment
-  // the first time.
+  // This is the main worker loop. It is pixel-based for best load balancing.
   while (true) {
-    // Use the atomic for threadsafe checking
-    int i = pixelAtomic->fetch_add(1, std::memory_order_relaxed);
-    if (i >= limit) {
-      break; 
-    }
-    double x = i % w;
-    double y = i / w;
-    float t = iters[i];
-    float *ptr = itersPtr + limit + i;
-    if (t) {
-      if (t == -999.0f) {
-        colors[i] = interiorColor;
-      } else if (t == 1.0f) {
-        int index = flowAmount;
-        int indexModulo = index % palleteLength;
-        float l = *ptr;
-        colors[i] = mix2(pallete[indexModulo], pallete[indexModulo + 1],
-                         flowAmount - index, renderMode,
-                         darkenEffect == 2 ? 1.0f - l : l);
-      } else {
-        float l = *ptr;
-        colors[i] = getPallete(
-            flog2(t) * speed1 + (t - 1) * speed2 + flowAmount, pallete,
-            palleteLength, renderMode, darkenEffect == 2 ? 1.0f - l : l);
-      }
-      continue;
-    }
-    double coordinateX = posX + x * zoom;
-    double coordinateY = posY + y * zoom;
-    if (absType == type) {  // If not needing to render a julia set
-      coordinateX2 = coordinateX;
-      coordinateY2 = coordinateY;
-    }
+    int i = __atomic_fetch_add(pixelAtomic, CALC_CHUNK_SIZE, __ATOMIC_RELAXED);
 
-    float n;
-    // Run the function needed and also look at the darken effect
-    switch (darkenEffect) {
-      case 0:
-        switch (absType) {
+    const int startPixel = i;
+    const int endPixel = std::min(startPixel + CALC_CHUNK_SIZE, pixels);
+
+    // Optimized coordinate calculation setup
+    for (int t = startPixel; t < endPixel; ++t) {
+      if (iters[t] == 0.0f) {
+        const double x = t % w;
+        const double y = t / w;
+        const double coordinateX = posX + x * zoom;
+        const double coordinateY = posY + y * zoom;
+
+        const double coordinateX2 = isJulia ? data1 : coordinateX;
+        const double coordinateY2 = isJulia ? data2 : coordinateY;
+
+        // Correctly get the pointer to the shading data for the CURRENT pixel
+        float *ptr = shading + t;
+        float n;
+
+        // Run the function needed and also look at the darken effect
+        switch (darkenEffect) {
+        case 0:
+          switch (absType) {
           case 1:
             n = mand(iterations, coordinateX, coordinateY, coordinateX2,
                      coordinateY2);
@@ -1659,10 +1678,10 @@ extern int run(int type, int w, int h, int *pixelP, double posX, double posY,
           case 16:
             n = mbbs4(iterations, coordinateX, coordinateY, coordinateX2,
                       coordinateY2);
-        }
-        break;
-      case 3:
-        switch (absType) {
+          }
+          break;
+        case 3:
+          switch (absType) {
           case 1:
             n = mandS2(iterations, coordinateX, coordinateY, coordinateX2,
                        coordinateY2, ptr);
@@ -1726,10 +1745,10 @@ extern int run(int type, int w, int h, int *pixelP, double posX, double posY,
           case 16:
             n = mbbs4S2(iterations, coordinateX, coordinateY, coordinateX2,
                         coordinateY2, ptr);
-        }
-        break;
-      default:
-        switch (absType) {
+          }
+          break;
+        default:
+          switch (absType) {
           case 1:
             n = mandS(iterations, coordinateX, coordinateY, coordinateX2,
                       coordinateY2, ptr);
@@ -1793,39 +1812,46 @@ extern int run(int type, int w, int h, int *pixelP, double posX, double posY,
           case 16:
             n = mbbs4(iterations, coordinateX, coordinateY, coordinateX2,
                       coordinateY2);
+          }
         }
+
+        // Store results and update the score.
+        iters[t] = n;
+        if (n == -999.0f) {
+          score += biggerIterations;
+        } else {
+          score += 12 + (int)n;
+        }
+      }
+
+      // This runs for every pixel to handle panning, interior and edge cases
+      // correctly.
+      const float n = iters[t];
+      if (unlikely(n == -999.0f)) {
+        colors[t] = interiorColor;
+      } else {
+        const float l = shading[t];
+        const float final_darken = (darkenEffect == 2) ? (1.0f - l) : l;
+
+        if (unlikely(n < 1.000004f)) { // Slightly above 1 due to our log2()
+                                       // estimation beeing goofy
+          iters[t] = 1.0f;
+          int index = static_cast<int>(flowAmount);
+          int indexModulo = index % paletteLen;
+          colors[t] = mix2(palette[indexModulo], palette[indexModulo + 1],
+                           flowAmount - index, renderMode, final_darken);
+        } else {
+          colors[t] =
+              getPalette(flog2(n) * speed1 + (n - 1.0f) * speed2 + flowAmount,
+                         palette, paletteLen, renderMode, final_darken);
+        }
+      }
     }
-    // Cost increases are pre-computed to be as stable as possible (at least for
-    // my computer)
-    if (n == -999.0f) {
-      score += biggerIterations;
-      colors[i] = interiorColor;
-      iters[i] = -999.0;
-    }
-    // Why a tad more than 1? If flog2() has a value less than this, it gives a
-    // negative number, which will cause problems.
-    else if (n < 1.000004f) {
-      int index = flowAmount;
-      int indexModulo = index % palleteLength;
-      float l = *ptr;
-      colors[i] = mix2(pallete[indexModulo], pallete[indexModulo + 1],
-                       flowAmount - index, renderMode,
-                       darkenEffect == 2 ? 1.0f - l : l);
-      iters[i] = 1.0f;
-    } else {
-      score += 13 + (int)n;
-      float l = *ptr;
-      colors[i] = getPallete(flog2(n) * speed1 + (n - 1) * speed2 + flowAmount,
-                             pallete, palleteLength, renderMode,
-                             darkenEffect == 2 ? 1.0f - l : l);
-      iters[i] = n;
-    }
-    if (score >= max) {
-      return i;
+    if (unlikely(i >= pixels)) {
+      return -1; // All chunks have been claimed, this worker is done.
+    } else if (unlikely(score >= max)) {
+      return endPixel == pixels ? -1 : endPixel;
     }
   }
-
-  // Tell the script that it has completed!
-  return -1;
 }
 }

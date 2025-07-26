@@ -315,7 +315,6 @@
             to learn how to use it. Click <span onclick="loadInfo()" class="choice">here</span> to learn about each
             option.
             Use the "More..." button to observe the options and shortcuts. (It might take a bit of time to get used to!)
-            <div id="notice">Hope you enjoy.</div>
         </div>
     </div>
     <div id="menu" class="scroll">
@@ -326,9 +325,9 @@
         <button onclick="switchAliasMode()">Switch Anti Aliasing Mode <b>(Z)</b></button>
         <button onclick="switchFlow(-1)">Flow Colors Forward <b>(A)</b></button>
         <button onclick="switchFlow(1)">Flow Colors Backward <b>(B)</b></button>
-        <button onclick="switchPallete()">Switch Pallete <b>(P)</b></button>
-        <button onclick="increaseSpeed()">Increase Pallete Change <b>(S)</b></button>
-        <button onclick="decreaseSpeed()">Decrease Pallete Change <b>(Shift+S)</b></button>
+        <button onclick="switchPalette()">Switch Palette <b>(P)</b></button>
+        <button onclick="increaseSpeed()">Increase Palette Change <b>(S)</b></button>
+        <button onclick="decreaseSpeed()">Decrease Palette Change <b>(Shift+S)</b></button>
         <br>
         <button onclick="switchCategory()">Switch Fractal Category <b>(X)</b></button>
         <button onclick="setIterations(iterations + 250)">Increase Iterations <b>(I)</b></button>
@@ -342,18 +341,23 @@
             Maximum of 25,000 colors.
         </span>
         <br>
-        <input type="text" placeholder="Enter RGB values..." id="newPallete"
+        <input type="text" placeholder="Enter RGB values..." id="newPalette"
             value="255,255,255 200,200,200 255,255,255 160,160,160 255,255,255 120,120,120 255,255,255 60,60,60 255,255,255"></input>
-        <button onclick="customizePallete()">Use Pallete</button>
+        <button onclick="customizePalette()">Use Palette</button>
         <br>
         <input type="text" placeholder="Import location..." id="newLoc"></input>
         <button onclick="importLocation()">Go to Location</button>
         <button onclick="saveLocation()">Export Current Position</button>
         <button onclick="download()">Download Image</button>
         <hr>
-        <button onclick="wantedFPS = 3.45">30FPS</button>
-        <button onclick="wantedFPS = 7">15FPS</button>
-        <button onclick="wantedFPS = 10.5">10FPS</button>
+        <button onclick="wantedFPS = 30">30FPS</button>
+        <button onclick="wantedFPS = 15">15FPS</button>
+        <button onclick="wantedFPS = 10">10FPS</button>
+
+        <button onclick="scrollMultiplier = 1.01">Slow zooming</button>
+        <button onclick="scrollMultiplier = 1.025">Medium zooming</button>
+        <button onclick="scrollMultiplier = 1.05">Fast zooming</button>
+        <button onclick="scrollMultiplier = 1">Constant zooming</button>
         <br><br>
         <div id="left">
             <div class="bottom">
@@ -373,7 +377,7 @@
         Hi there!
         <br>
         This online fractal viewer currently supports automatic multithreading, normal map shading, unique banding
-        modes, basic pallete animation, anti-aliasing, coordinate saving, and more!
+        modes, basic palette animation, anti-aliasing, coordinate saving, and more!
         <hr>
         <b>The colors give you a visual indicator for the options you've selected. Make sure to export your location
             locally before closing the tab!</b>
@@ -386,7 +390,7 @@
         <b>Switch Fractal</b> (reversable): Switches the type of fractal. There are many types, so try to give them all
         a try!
         <br>
-        <b>Switch Render Mode</b> (reversable, partially complete): Switches how the pallete is rendered.
+        <b>Switch Render Mode</b> (reversable, partially complete): Switches how the palette is rendered.
         <br>
         <b>Switch Darken Effect</b> (reversable, not complete): For some fractals, this creates a shading effect. For
         other fractals, you won't see a shading effect. There is an additional mode as well that isn't directly shading;
@@ -401,10 +405,10 @@
         Each option can be pressed multiple times to increase or decrease this flow rate. (This can be laggy when viewed
         at high resolutions/pixel densities!)
         <br>
-        <b>Switch Pallete</b>: Changes the pallete to another pre-selected pallete option.
+        <b>Switch Palette</b>: Changes the palette to another pre-selected palette option.
         <br>
-        <b>Increase/Decrease Pallete Change</b>: Increase or decrease how rapidly the colors cycle through the pallete;
-        not the animation. Each option can be pressed multiple times to increase or decrease this pallete change.
+        <b>Increase/Decrease Palette Change</b>: Increase or decrease how rapidly the colors cycle through the palette;
+        not the animation. Each option can be pressed multiple times to increase or decrease this palette change.
         <br><br>
         <b>Switch Fractal Category</b>: Switches the category of the fractal (Multibrot, power of Burning Ship, custom
         fractals).

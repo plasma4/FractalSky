@@ -4,7 +4,7 @@
         {
             "label": "Build Fractal WASM (Unix/Bash, Shared Memory)",
             "type": "shell",
-            "command": "emcc -O3 -ffast-math -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s SHARED_MEMORY=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractal.wasm fractal.cpp && { TEMP_WASM=$(mktemp -t wasm_opt_XXXXXX); wasm-opt fractal.wasm -o \"$TEMP_WASM\" -O4 --strip-debug --strip-dwarf --strip-producers --enable-threads && mv \"$TEMP_WASM\" fractal.wasm; }",
+            "command": "emcc -msimd128 -std=c++20 -O3 -ffast-math -flto -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s SHARED_MEMORY=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractal.wasm fractal.cpp decimal.cpp && { TEMP_WASM=$(mktemp -t wasm_opt_XXXXXX); wasm-opt fractal.wasm -o \"$TEMP_WASM\" -O4 --strip-debug --strip-dwarf --strip-producers --enable-threads --enable-simd && mv \"$TEMP_WASM\" fractal.wasm; }",
             "group": {
                 "kind": "build",
                 "isDefault": true
@@ -15,18 +15,18 @@
         {
             "label": "Build FractalUnshared WASM (Unix/Bash, Unshared Memory)",
             "type": "shell",
-            "command": "emcc -O3 -ffast-math -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractalUnshared.wasm fractal.cpp && { TEMP_WASM=$(mktemp -t wasm_opt_XXXXXX); wasm-opt fractalUnshared.wasm -o \"$TEMP_WASM\" -O4 --strip-debug --strip-dwarf --strip-producers --enable-threads && mv \"$TEMP_WASM\" fractalUnshared.wasm; }",
+            "command": "emcc -msimd128 -std=c++20 -O3 -ffast-math -flto -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractalUnshared.wasm fractal.cpp decimal.cpp && { TEMP_WASM=$(mktemp -t wasm_opt_XXXXXX); wasm-opt fractalUnshared.wasm -o \"$TEMP_WASM\" -O4 --strip-debug --strip-dwarf --strip-producers --enable-threads --enable-simd && mv \"$TEMP_WASM\" fractalUnshared.wasm; }",
             "group": "build",
             "problemMatcher": [],
             "detail": "Builds fractalUnshared.wasm (without shared memory) with Emscripten and wasm-opt for Unix-like systems (Bash/Zsh)."
         },
         {
-            "label": "Inject Unshared WASM Base64 (Unix/Bash)",
+            "label": "Inject fractalUnshared.wasm Base64 (Unix/Bash)",
             "type": "shell",
             "command": "/bin/bash",
             "args": [
                 "-c",
-                "wasm_base64=$(cat fractalUnshared.wasm | base64) && sed -i.bak \"s|^[[:space:]]*const unsharedWASMFileName =.*|const unsharedWASMFileName = \\\"data:application/wasm;base64,$wasm_base64\\\";|\" main.js && rm main.js.bak"
+                "wasm_data=$(cat fractalUnshared.wasm | base64) && sed -i.bak \"s|^[[:space:]]*const unsharedWASMData =.*|const unsharedWASMData = \\\"data:application/wasm;base64,$wasm_data\\\"|\" main.js && rm main.js.bak"
             ],
             "problemMatcher": [],
             "group": "build"
@@ -34,7 +34,7 @@
         {
             "label": "Build Fractal WASM (Windows, Shared Memory)",
             "type": "shell",
-            "command": "emcc -O3 -ffast-math -s SHARED_MEMORY=1 -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractal.wasm fractal.cpp; if ($LASTEXITCODE -eq 0) { $TEMP_WASM = [System.IO.Path]::GetTempFileName() + \".wasm\"; wasm-opt fractal.wasm -o $TEMP_WASM -O4 --strip-debug --strip-dwarf --strip-producers --enable-threads; if ($LASTEXITCODE -eq 0) { Move-Item -Path $TEMP_WASM -Destination fractal.wasm -Force; } else { Write-Error \"wasm-opt failed.\"; } } else { Write-Error \"emcc failed.\"; }",
+            "command": "emcc -msimd128 -std=c++20 -O3 -ffast-math -flto -s SIDE_MODULE=2 -s SHARED_MEMORY=1 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractal.wasm fractal.cpp decimal.cpp; if ($LASTEXITCODE -eq 0) { $TEMP_WASM = [System.IO.Path]::GetTempFileName() + \".wasm\"; wasm-opt fractal.wasm -o $TEMP_WASM -O4 --strip-debug --strip-dwarf --strip-producers --enable-threads --enable-simd; if ($LASTEXITCODE -eq 0) { Move-Item -Path $TEMP_WASM -Destination fractal.wasm -Force; } else { Write-Error \"wasm-opt failed.\"; } } else { Write-Error \"emcc failed.\"; }",
             "group": "build",
             "problemMatcher": [],
             "detail": "Builds fractal.wasm with Emscripten and wasm-opt for Windows (PowerShell).",
@@ -49,7 +49,7 @@
         {
             "label": "Build FractalUnshared WASM (Windows, Unshared Memory)",
             "type": "shell",
-            "command": "emcc -O3 -ffast-math -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractalUnshared.wasm fractal.cpp; if ($LASTEXITCODE -eq 0) { $TEMP_WASM = [System.IO.Path]::GetTempFileName() + \".wasm\"; wasm-opt fractalUnshared.wasm -o $TEMP_WASM -O4 --strip-debug - -strip-dwarf --strip-producers --enable-threads; if ($LASTEXITCODE -eq 0) { Move-Item -Path $TEMP_WASM -Destination fractalUnshared.wasm -Force; } else { Write-Error \"wasm-opt failed.\"; } } else { Write-Error \"emcc failed.\"; }",
+            "command": "emcc -msimd128 -std=c++20 -O3 -ffast-math -flto -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractalUnshared.wasm fractal.cpp decimal.cpp; if ($LASTEXITCODE -eq 0) { $TEMP_WASM = [System.IO.Path]::GetTempFileName() + \".wasm\"; wasm-opt fractalUnshared.wasm -o $TEMP_WASM -O4 --strip-debug --strip-dwarf --strip-producers --enable-threads --enable-simd; if ($LASTEXITCODE -eq 0) { Move-Item -Path $TEMP_WASM -Destination fractalUnshared.wasm -Force; } else { Write-Error \"wasm-opt failed.\"; } } else { Write-Error \"emcc failed.\"; }",
             "group": "build",
             "problemMatcher": [],
             "detail": "Builds fractalUnshared.wasm (without shared memory) with Emscripten and wasm-opt for Windows (PowerShell).",
@@ -62,7 +62,7 @@
             }
         },
         {
-            "label": "Inject Unshared WASM Base64 (PowerShell)",
+            "label": "Inject fractalUnshared.wasm Base64 (PowerShell)",
             "type": "shell",
             "command": "pwsh.exe",
             "args": [
@@ -70,14 +70,14 @@
                 "$wasmFilePath = \"fractalUnshared.wasm\";",
                 "$mainJsPath = \"main.js\";",
                 "try {",
-                "    $wasmBase64 = [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($wasmFilePath));",
+                "    $wasm_data = [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($wasmFilePath));",
                 "} catch {",
                 "    Write-Error \"Failed to read WASM file or convert to Base64: $($_.Exception.Message)\";",
                 "    exit 1;",
                 "}",
                 "$content = Get-Content -Path $mainJsPath -Raw;",
-                "$regex = '(?<=const unsharedWASMFileName = \")[^\"]*(?=\";)';",
-                "$replacement = \"data:application/wasm;base64,\" + $wasmBase64;",
+                "$regex = '(?<=const unsharedWASMData = \")[^\"]*(?=\")';",
+                "$replacement = \"data:application/wasm;base64,\" + $wasm_data;",
                 "$newContent = $content -replace $regex, $replacement;",
                 "Set-Content -Path $mainJsPath -Value $newContent -Force -Encoding UTF8;"
             ],
