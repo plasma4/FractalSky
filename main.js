@@ -392,19 +392,11 @@ FakeWorker.prototype.postMessage = function (data) {
     if (Array.isArray(data) && typeof data[0] === "number") {
         const sliced = data.slice(1)
         let result = null
-        try {
-            if (data[0] === 1 && this.handlePixels) {
-                // Execute the WASM function
-                result = this.handlePixels.apply(this, sliced)
-                immediateProgress = result
-                updateProgressLine(pixelItem[0])
-            } else if (data[0] === 2 && this.handleRender) {
-                result = this.handleRender.apply(this, sliced)
-            }
-        } catch (error) {
-            console.error("FakeWorker: Error executing WASM function:", error)
-            // Signal an error by posting a specific value or throwing.
-            result = -1 // Or some other agreed-upon error signal for the worker.
+        if (data[0] === 1 && this.handlePixels) {
+            // Execute the WASM function
+            result = this.handlePixels.apply(this, sliced)
+        } else if (data[0] === 2 && this.handleRender) {
+            result = this.handleRender.apply(this, sliced)
         }
 
         // Defer posting the message to simulate asynchronicity, and allow performance.now() to work properly!
@@ -480,12 +472,6 @@ function messageWebWorkersObject(message) {
     }
 }
 
-function messageWebWorkers(messages) {
-    for (var i = 0; i < webWorkers.length; i++) {
-        webWorkers[i].postMessage(messages[i])
-    }
-}
-
 function messageWebWorker(i, message) {
     webWorkers[i].postMessage(message)
 }
@@ -530,11 +516,11 @@ const paletteBytes = 100000
 const decimalStart = paletteBytes + paletteStart // Used for Decimal values
 const dataStart = decimalStart + 4096
 const defaultCost = 200000
-var immediateProgress = 0
 var wasmLength = pixels * 12 + dataStart
 var webWorkers = []
 var workersDone = 0
 var calculationDiff = 1
+var highestProgress = 0
 var rendersComp
 var needResize = false
 var needRender = false
@@ -550,7 +536,7 @@ function setupWebWorkers(amount) {
         } else {
             worker = new FakeWorker()
             const fakeWorkerUpdateLoop = () => {
-                updateProgressLine(immediateProgress) // Update the line with the latest known value
+                updateProgressLine(pixel) // Update the line with the latest known value
                 if (unfinished) {
                     requestAnimationFrame(fakeWorkerUpdateLoop)
                 }
@@ -593,12 +579,22 @@ function setupWebWorkers(amount) {
             }
 
             workerResults[i] = data
-            if (pixel !== -1) {
+            if (data != null && data !== -1) {
                 workerCosts[i] = 0.9 * workerCosts[i] + Math.max(Math.min(wantedFPS * ((workerCosts[i] + 5000) / (calculationDiff + 1)), workerCosts[i] * 0.25), 5000)
             }
 
             if (++workersDone === workerCount) {
                 workersDone = 0
+                var newTime = performance.now()
+                calculationDiff = Math.max(newTime - time, 1)
+                time = newTime
+
+                if (workerResults.some(res => res != null && res !== -1)) {
+                    for (let t = 0; t < workerCount; t++) {
+                        workerCosts[t] = 0.9 * workerCosts[t] + Math.max(Math.min(wantedFPS * ((workerCosts[t] + 5000) / (calculationDiff + 1)), workerCosts[t] * 0.25), 5000)
+                    }
+                }
+
                 if (data == null) {
                     // Using the optimized render function returns a void, so we check if that's the case here.
                     requestAnimationFrame(function () {
@@ -608,17 +604,15 @@ function setupWebWorkers(amount) {
                 } else {
                     updateOutputImage()
                     lastOutput = performance.now()
-                    var finalResultsThisPass = [...workerResults]
+                    var finalResultsThisPass = workerResults.slice(0)
                     workerResults.fill(null)
 
                     var progressValues = finalResultsThisPass.filter(val => val !== -1 && val != null)
+                    highestProgress = progressValues.length > 0 ? Math.max(...progressValues) : -1
                     var lowestProgress = progressValues.length > 0 ? Math.min(...progressValues) : -1
 
                     pixel = lowestProgress >= pixels ? -1 : lowestProgress
                     pixelDiff = Math.round((pixel - originalPixel) * 0.01)
-                    var newTime = performance.now()
-                    calculationDiff = Math.max(newTime - time, 1)
-                    time = newTime
                     unfinished = pixel !== -1
 
                     update()
@@ -1003,7 +997,10 @@ function update() {
             rehandle = false
             needRender = false
             setPixel(0)
-            messageWebWorkers([2, pixels, paletteLen, interior, renderMode, shadingEffect, speed, flowAmount])  // Ultimately, this sends the parameters needed to the render function in each worker.
+            var renderCommand = [2, pixels, paletteLen, interior, renderMode, shadingEffect, speed, flowAmount]
+            for (let i = 0; i < workerCount; i++) {
+                messageWebWorker(i, renderCommand)
+            }
         } else {
             requestAnimationFrame(update)
         }
@@ -1072,7 +1069,7 @@ function completeRender(animatedMode) { // animatedMode must be true in order fo
             }
             percent.style.color = color
             // Update the progress line (which isn't rendered with the canvas to prevent the line from showing in the preview)
-            line.style.top = (Math.floor(pixel / (w * aliasingFactor)) / devicePixelRatio).toFixed(1) + "px"
+            line.style.top = (Math.floor(highestProgress / (w * aliasingFactor)) / devicePixelRatio).toFixed(1) + "px"
             line.style.backgroundColor = color
         } else {
             previousGuess = mainDiff

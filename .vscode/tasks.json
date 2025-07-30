@@ -15,7 +15,7 @@
         {
             "label": "Build FractalUnshared WASM (Unix/Bash, Unshared Memory)",
             "type": "shell",
-            "command": "emcc -msimd128 -std=c++20 -O3 -ffast-math -flto -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractalUnshared.wasm fractal.cpp decimal.cpp && { TEMP_WASM=$(mktemp -t wasm_opt_XXXXXX); wasm-opt fractalUnshared.wasm -o \"$TEMP_WASM\" -O4 --strip-debug --strip-dwarf --strip-producers --enable-threads --enable-simd && mv \"$TEMP_WASM\" fractalUnshared.wasm; }",
+            "command": "emcc -msimd128 -std=c++20 -O3 -ffast-math -flto -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractalUnshared.wasm fractal.cpp decimal.cpp && { TEMP_WASM=$(mktemp -t wasm_opt_XXXXXX); wasm-opt fractalUnshared.wasm -o \"$TEMP_WASM\" -O4 --strip-debug --strip-dwarf --strip-producers --enable-simd && mv \"$TEMP_WASM\" fractalUnshared.wasm; }",
             "group": "build",
             "problemMatcher": [],
             "detail": "Builds fractalUnshared.wasm (without shared memory) with Emscripten and wasm-opt for Unix-like systems (Bash/Zsh)."
@@ -49,7 +49,7 @@
         {
             "label": "Build FractalUnshared WASM (Windows, Unshared Memory)",
             "type": "shell",
-            "command": "emcc -msimd128 -std=c++20 -O3 -ffast-math -flto -s SIDE_MODULE=2 -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -Wl,--no-entry -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractalUnshared.wasm fractal.cpp decimal.cpp; if ($LASTEXITCODE -eq 0) { $TEMP_WASM = [System.IO.Path]::GetTempFileName() + \".wasm\"; wasm-opt fractalUnshared.wasm -o $TEMP_WASM -O4 --strip-debug --strip-dwarf --strip-producers --enable-threads --enable-simd; if ($LASTEXITCODE -eq 0) { Move-Item -Path $TEMP_WASM -Destination fractalUnshared.wasm -Force; } else { Write-Error \"wasm-opt failed.\"; } } else { Write-Error \"emcc failed.\"; }",
+            "command": "emcc -msimd128 -std=c++20 -O3 -ffast-math -flto -s NODEJS_CATCH_REJECTION=0 -s WASM_BIGINT=0 -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS=\"['_run','_render']\" -s ERROR_ON_UNDEFINED_SYMBOLS=0 -s DISABLE_EXCEPTION_CATCHING=1 -o fractalUnshared.wasm fractal.cpp decimal.cpp; if ($LASTEXITCODE -eq 0) { $TEMP_WASM = [System.IO.Path]::GetTempFileName() + \".wasm\"; wasm-opt fractalUnshared.wasm -o $TEMP_WASM -O4 --strip-debug --strip-dwarf --strip-producers --enable-simd; if ($LASTEXITCODE -eq 0) { Move-Item -Path $TEMP_WASM -Destination fractalUnshared.wasm -Force; } else { Write-Error \"wasm-opt failed.\"; } } else { Write-Error \"emcc failed.\"; }",
             "group": "build",
             "problemMatcher": [],
             "detail": "Builds fractalUnshared.wasm (without shared memory) with Emscripten and wasm-opt for Windows (PowerShell).",
@@ -70,10 +70,10 @@
                 "$wasmFilePath = \"fractalUnshared.wasm\";",
                 "$mainJsPath = \"main.js\";",
                 "try {",
-                "    $wasm_data = [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($wasmFilePath));",
+                "  $wasm_data = [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($wasmFilePath));",
                 "} catch {",
-                "    Write-Error \"Failed to read WASM file or convert to Base64: $($_.Exception.Message)\";",
-                "    exit 1;",
+                "  Write-Error \"Failed to read WASM file or convert to Base64: $($_.Exception.Message)\";",
+                "  exit 1;",
                 "}",
                 "$content = Get-Content -Path $mainJsPath -Raw;",
                 "$regex = '(?<=const unsharedWASMData = \")[^\"]*(?=\")';",

@@ -221,7 +221,7 @@ static inline float flog2(float n) {
 
 static inline float doubleLogSqrt(float n) {
   // Simpler to create a function for this, as it's used so much
-  return flog2(flog2(sqrtf(n)));
+  return flog2(flog2(n) * 0.5);
 }
 
 static inline float cosq(float x) {
@@ -1497,7 +1497,11 @@ void render(int pixels, int paletteLen, uint32_t interiorColor, int renderMode,
   // This is the robust, thread-safe loop structure.
   while (true) {
     // Use the compiler built-in for the atomic operation.
+    // #ifdef __EMSCRIPTEN_PTHREADS__
     int chunkIndex = __atomic_fetch_add(pixelAtomic, 1, __ATOMIC_RELAXED);
+    // #else
+    //     int chunkIndex = (*pixelAtomic)++;
+    // #endif
     if (unlikely(chunkIndex >= totalChunks)) {
       break;
     }
@@ -1559,10 +1563,10 @@ void render(int pixels, int paletteLen, uint32_t interiorColor, int renderMode,
  * @return              int             -1 for completion, pixel index if not
  * fully completed.
  */
-int run(int type, int w, int h, double posX, double posY,
-        double zoom, int max, int iterations, int paletteLen,
-        uint32_t interiorColor, int renderMode, int darkenEffect, float speed,
-        float flowAmount, double data1, double data2) {
+int run(int type, int w, int h, double posX, double posY, double zoom, int max,
+        int iterations, int paletteLen, uint32_t interiorColor, int renderMode,
+        int darkenEffect, float speed, float flowAmount, double data1,
+        double data2) {
   // "What is the current pixel we are working on?"
   int *pixelAtomic = reinterpret_cast<int *>(Mem::AtomicCounter);
   // Total pixels to work on
@@ -1591,7 +1595,12 @@ int run(int type, int w, int h, double posX, double posY,
 
   // This is the main worker loop. It is pixel-based for best load balancing.
   while (true) {
+    // #ifdef __EMSCRIPTEN_PTHREADS__
     int i = __atomic_fetch_add(pixelAtomic, CALC_CHUNK_SIZE, __ATOMIC_RELAXED);
+    // #else
+    //     int i = *pixelAtomic;
+    //     *pixelAtomic += CALC_CHUNK_SIZE;
+    // #endif
 
     const int startPixel = i;
     const int endPixel = std::min(startPixel + CALC_CHUNK_SIZE, pixels);
