@@ -4,15 +4,19 @@ under GNU Affero General Public License v3. and is open source in case you want
 to use it! It is compiled into WASM, and the exported functions can then be
 executed by JavaScript.
 
+The run and render functions are exported to JS. (See ./vscode/tasks.json)
+
+FOR THE FUTURE:
 The code will use double for normal calculations then Bilinear Approximation and
-pertubation (not finished for all hybrids.) Memory regions image should be in
+pertubation (not finished for all hybrids). Memory regions image should be in
 the README (GitHub version at https://github.com/plasma4/FractalSky/)
 */
 
 #include <algorithm>
+#include <atomic>
 #include <stdint.h>
 
-// We don't need to include math.h if we add these functions.
+// We don't need to include math.h if we use builtins.
 float sqrtf(float x);
 double sqrt(double x);
 double floor(double x);
@@ -46,20 +50,23 @@ constexpr uint32_t PixelDataStart = DecimalStorage + 4096;
 
 constexpr int CALC_CHUNK_SIZE = 32;
 constexpr int RENDER_CHUNK_SIZE = 4096;
-const double BAILOUT_VALUE = 10000.0;
+const double BAILOUT_VALUE_SQR = 1e6;
 
 static inline double absD(double x) { return std::fabs(x); }
 
-// Fast mixing (smoothing) of 32-bit colors
-static inline uint32_t mix(uint32_t colorStart, uint32_t colorEnd, uint32_t a) {
-  uint32_t reverse = 0xff - a;
-  uint32_t r = (((colorStart & 0xff) * reverse + (colorEnd & 0xff) * a) >> 8);
-  uint32_t g =
-      ((((colorStart >> 8) & 0xff) * reverse + ((colorEnd >> 8) & 0xff) * a) >>
-       8)
-      << 8;
+// Fast mixing (smoothing) of 32-bit colors using bitwise operators
+// mixAmount ranges from 0-256
+static inline uint32_t mix(uint32_t colorStart, uint32_t colorEnd,
+                           uint32_t mixAmount) {
+  uint32_t reverse = 0xff - mixAmount;
+  uint32_t r =
+      (((colorStart & 0xff) * reverse + (colorEnd & 0xff) * mixAmount) >> 8);
+  uint32_t g = ((((colorStart >> 8) & 0xff) * reverse +
+                 ((colorEnd >> 8) & 0xff) * mixAmount) >>
+                8)
+               << 8;
   uint32_t b = ((((colorStart >> 16) & 0xff) * reverse +
-                 ((colorEnd >> 16) & 0xff) * a) >>
+                 ((colorEnd >> 16) & 0xff) * mixAmount) >>
                 8)
                << 16;
   return r ^ g ^ b ^ 0xff000000;
@@ -70,6 +77,7 @@ static inline uint32_t mixBlack(uint32_t colorStart, uint32_t a) {
     return colorStart;
   }
 
+  // Use some more bit hacks!
   uint32_t reverse = 0xff - a;
   uint32_t r = (((colorStart & 0xff) * reverse) >> 8);
   uint32_t g = ((((colorStart >> 8) & 0xff) * reverse) >> 8) << 8;
@@ -173,13 +181,16 @@ uint32_t getPalette(float position, uint32_t *palette, int length,
 
     if (mod2 > 0.4f) {
       if (mod2 > 0.5f) {
-        if (mod2 < 0.95f) {
-          color = mixBlack(color, 160.0f * mod2);
+        if (mod2 > 0.98f) {
+          // 15840 = 50 * 160
+          color = mixBlack(color, 8000.0f * (1.0f - mod2));
         } else {
-          color = mixBlack(color, 2500.0f - 2500.0f * mod2);
+          color = mixBlack(color, 160.0f * mod2);
         }
-      } else {
+      } else if (mod2 < 0.49f) { // Shadowy part
         color = mixBlack(color, 2500.0f * mod2 - 1000.0f);
+      } else { // Transition into less shadowy part
+        color = mixBlack(color, 250.0f - 17000.0f * (mod2 - 0.49f));
       }
     }
   } else if (renderMode == 3) {
@@ -255,7 +266,7 @@ float mand(int iterations, double x, double y, double cx, double cy) {
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       // The reason why we have such a high exit value (2000) is because we can
       // use a double logarithm of the absolute distance (sqrt handled inside
       // the doubleLogSqrt function) to make the iterations look smooth.
@@ -276,7 +287,7 @@ float mand3(int iterations, double x, double y, double cx, double cy) {
     i = i * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       // There's a magic number here for log3. (I probably didn't need to do
       // this since -O3 would optimize this out to a constant anyway, but it is
       // what it is.)
@@ -299,7 +310,7 @@ float mand4(int iterations, double x, double y, double cx, double cy) {
     r = sr * (sr - 6.0 * si) + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
@@ -319,7 +330,7 @@ float mand5(int iterations, double x, double y, double cx, double cy) {
     sr = r * r;
     si = i * i;
     fi = si * si;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.43067655807339306f;
       return result;
     }
@@ -339,7 +350,7 @@ float mand6(int iterations, double x, double y, double cx, double cy) {
     r = sr * (fr + 15.0 * fi) - si * (15.0 * fr + fi) + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.38685280723454163f;
       return result;
     }
@@ -361,7 +372,7 @@ float mand7(int iterations, double x, double y, double cx, double cy) {
     i = i * (fr * (7.0 * sr - 35.0 * si) + fi * (21.0 * sr - si)) + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.3562071871080222f;
       return result;
     }
@@ -381,7 +392,7 @@ float ship(int iterations, double x, double y, double cx, double cy) {
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -399,7 +410,7 @@ float ship3(int iterations, double x, double y, double cx, double cy) {
     i = absD(i) * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
@@ -417,7 +428,7 @@ float ship4(int iterations, double x, double y, double cx, double cy) {
     r = sr * sr - 6.0 * sr * si + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
@@ -435,7 +446,7 @@ float celt(int iterations, double x, double y, double cx, double cy) {
     r = absD(sr - si) + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -454,7 +465,7 @@ float prmb(int iterations, double x, double y, double cx, double cy) {
     i = -tr - cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -475,7 +486,7 @@ float buff(int iterations, double x, double y, double cx, double cy) {
     i = tr - i + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -493,7 +504,7 @@ float tric(int iterations, double x, double y, double cx, double cy) {
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -518,7 +529,7 @@ float mbbs(int iterations, double x, double y, double cx, double cy) {
     }
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -543,7 +554,7 @@ float mbbs3(int iterations, double x, double y, double cx, double cy) {
     }
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
@@ -568,7 +579,7 @@ float mbbs4(int iterations, double x, double y, double cx, double cy) {
     }
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
@@ -594,7 +605,7 @@ float mandS(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -627,7 +638,7 @@ float mand3S(int iterations, double x, double y, double cx, double cy,
     i = i * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -662,7 +673,7 @@ float mand4S(int iterations, double x, double y, double cx, double cy,
     r = sr * (sr - 6.0 * si) + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -697,7 +708,7 @@ float mand5S(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     fi = si * si;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.43067655807339306f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -726,7 +737,7 @@ float mand6S(int iterations, double x, double y, double cx, double cy,
     r = sr * (fr + 15.0 * fi) - si * (15.0 * fr + fi) + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.38685280723454163f;
       return result;
     }
@@ -749,7 +760,7 @@ float mand7S(int iterations, double x, double y, double cx, double cy,
     i = i * (fr * (7.0 * sr - 35.0 * si) + fi * (21.0 * sr - si)) + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.3562071871080222f;
       return result;
     }
@@ -775,7 +786,7 @@ float shipS(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -808,7 +819,7 @@ float ship3S(int iterations, double x, double y, double cx, double cy,
     i = absD(i) * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -842,7 +853,7 @@ float ship4S(int iterations, double x, double y, double cx, double cy,
     r = sr * sr - 6.0 * sr * si + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double sqm = dr * dr + di * di;
       double ur = (r * dr + i * di) / sqm;
@@ -869,7 +880,7 @@ float celtS(int iterations, double x, double y, double cx, double cy,
     r = absD(sr - si) + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -889,7 +900,7 @@ float prmbS(int iterations, double x, double y, double cx, double cy,
     i = -tr - y;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -911,7 +922,7 @@ float buffS(int iterations, double x, double y, double cx, double cy,
     i = tr - i + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -930,7 +941,7 @@ float tricS(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -956,7 +967,7 @@ float mbbsS(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       return result;
     }
@@ -982,7 +993,7 @@ float mbbs3S(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       return result;
     }
@@ -1008,7 +1019,7 @@ float mbbs4S(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       return result;
     }
@@ -1029,7 +1040,7 @@ float mandS2(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1055,7 +1066,7 @@ float mand3S2(int iterations, double x, double y, double cx, double cy,
     i = i * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double ur = r + i;
       double ui = i - r;
@@ -1081,7 +1092,7 @@ float mand4S2(int iterations, double x, double y, double cx, double cy,
     r = sr * (sr - 6.0 * si) + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double ur = r + i;
       double ui = i - r;
@@ -1109,7 +1120,7 @@ float mand5S2(int iterations, double x, double y, double cx, double cy,
     sr = r * r;
     si = i * i;
     fi = si * si;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.43067655807339306f;
       double ur = r + i;
       double ui = i - r;
@@ -1137,7 +1148,7 @@ float mand6S2(int iterations, double x, double y, double cx, double cy,
     r = sr * (fr + 15.0 * fi) - si * (15.0 * fr + fi) + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.38685280723454163f;
       double ur = r + i;
       double ui = i - r;
@@ -1167,7 +1178,7 @@ float mand7S2(int iterations, double x, double y, double cx, double cy,
     i = i * (fr * (7.0 * sr - 35.0 * si) + fi * (21.0 * sr - si)) + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.3562071871080222f;
       double ur = r + i;
       double ui = i - r;
@@ -1197,7 +1208,7 @@ float shipS2(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1223,7 +1234,7 @@ float ship3S2(int iterations, double x, double y, double cx, double cy,
     i = absD(i) * (3.0 * sr - si) + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double ur = r + i;
       double ui = i - r;
@@ -1249,7 +1260,7 @@ float ship4S2(int iterations, double x, double y, double cx, double cy,
     r = sr * sr - 6.0 * sr * si + si * si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double ur = r + i;
       double ui = i - r;
@@ -1275,7 +1286,7 @@ float celtS2(int iterations, double x, double y, double cx, double cy,
     r = absD(sr - si) + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1302,7 +1313,7 @@ float prmbS2(int iterations, double x, double y, double cx, double cy,
     i = -tr - y;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1331,7 +1342,7 @@ float buffS2(int iterations, double x, double y, double cx, double cy,
     i = tr - i + cy;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1357,7 +1368,7 @@ float tricS2(int iterations, double x, double y, double cx, double cy,
     r = sr - si + cx;
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1390,7 +1401,7 @@ float mbbsS2(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si));
       double ur = r + i;
       double ui = i - r;
@@ -1423,7 +1434,7 @@ float mbbs3S2(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.6309297535714575f;
       double ur = r + i;
       double ui = i - r;
@@ -1456,7 +1467,7 @@ float mbbs4S2(int iterations, double x, double y, double cx, double cy,
     }
     sr = r * r;
     si = i * i;
-    if (unlikely(sr + si > BAILOUT_VALUE)) {
+    if (unlikely(sr + si > BAILOUT_VALUE_SQR)) {
       float result = (float)n - (doubleLogSqrt(sr + si)) * 0.5f;
       double ur = r + i;
       double ui = i - r;
@@ -1477,17 +1488,16 @@ extern "C" {
 void render(int pixels, int paletteLen, uint32_t interiorColor, int renderMode,
             int darkenEffect, float speed, float flowAmount) {
   // "What is the current pixel we are working on?"
-  // `pixelAtomic` is the atomic counter for chunks, located at
-  // `Mem::AtomicCounter`.
-  int *pixelAtomic = reinterpret_cast<int *>(Mem::AtomicCounter);
+  std::atomic<int> *pixelAtomic =
+      reinterpret_cast<std::atomic<int> *>(Mem::AtomicCounter);
 
-  // `iters` points to the start of the iteration data in `Mem::PixelDataStart`.
+  // Points to the start of the iteration data.
   float *iters = reinterpret_cast<float *>(Mem::PixelDataStart);
-  // `shading` data immediately follows `iters` data in memory.
+  // Shading data immediately follows iteration data in memory.
   float *shading = iters + pixels;
-  // `colors` (RGBA data) immediately follows `shading` data in memory.
+  // RGBA data follows shading.
   uint32_t *colors = reinterpret_cast<uint32_t *>(shading + pixels);
-  // `palette` data is located at `Mem::PaletteData`.
+  // Palette data is after the LUT.
   uint32_t *palette = reinterpret_cast<uint32_t *>(Mem::PaletteData);
 
   const float speed1 = sqrtf(sqrtf(speed));
@@ -1497,11 +1507,7 @@ void render(int pixels, int paletteLen, uint32_t interiorColor, int renderMode,
   // This is the robust, thread-safe loop structure.
   while (true) {
     // Use the compiler built-in for the atomic operation.
-    // #ifdef __EMSCRIPTEN_PTHREADS__
-    int chunkIndex = __atomic_fetch_add(pixelAtomic, 1, __ATOMIC_RELAXED);
-    // #else
-    //     int chunkIndex = (*pixelAtomic)++;
-    // #endif
+    int chunkIndex = pixelAtomic->fetch_add(1, std::memory_order_relaxed);
     if (unlikely(chunkIndex >= totalChunks)) {
       break;
     }
@@ -1515,18 +1521,30 @@ void render(int pixels, int paletteLen, uint32_t interiorColor, int renderMode,
       // This is your original, correct coloring logic.
       if (t == -999.0f) {
         colors[i] = interiorColor;
-      } else if (t == 1.0f) {
-        int index = flowAmount;
-        int indexModulo = index % paletteLen;
-        float l = shading[i]; // Correctly read from the shading buffer
-        colors[i] = mix2(palette[indexModulo], palette[indexModulo + 1],
-                         flowAmount - index, renderMode,
-                         darkenEffect == 2 ? 1.0f - l : l);
       } else {
-        float l = shading[i]; // Correctly read from the shading buffer
-        colors[i] = getPalette(
-            flog2(t) * speed1 + (t - 1) * speed2 + flowAmount, palette,
-            paletteLen, renderMode, darkenEffect == 2 ? 1.0f - l : l);
+        const float s = shading[i];
+        const float finalDarken = (darkenEffect == 2) ? (1.0f - s) : s;
+        if (t < 1.25f) {
+          int index = static_cast<int>(flowAmount);
+          int indexModulo = index % paletteLen;
+          uint32_t c = mix2(palette[indexModulo], palette[indexModulo + 1],
+                            flowAmount - index, renderMode, finalDarken);
+          // Slightly above 1 due to log2() approximation
+          if (t > 1.000004f) {
+            // n * 1020 - 1020 -> 255 * (n * 4 - 4)
+            c = mix(
+                c,
+                getPalette(flog2(t) * speed1 + (t - 1) * speed2 + flowAmount,
+                           palette, paletteLen, renderMode, finalDarken),
+                (t * 1020.0f) - 1020.0f);
+          }
+          colors[i] = c;
+        } else {
+          float l = shading[i]; // Correctly read from the shading buffer
+          colors[i] =
+              getPalette(flog2(t) * speed1 + (t - 1) * speed2 + flowAmount,
+                         palette, paletteLen, renderMode, finalDarken);
+        }
       }
     }
   }
@@ -1568,7 +1586,8 @@ int run(int type, int w, int h, double posX, double posY, double zoom, int max,
         int darkenEffect, float speed, float flowAmount, double data1,
         double data2) {
   // "What is the current pixel we are working on?"
-  int *pixelAtomic = reinterpret_cast<int *>(Mem::AtomicCounter);
+  std::atomic<int> *pixelAtomic =
+      reinterpret_cast<std::atomic<int> *>(Mem::AtomicCounter);
   // Total pixels to work on
   const int pixels = w * h;
 
@@ -1595,12 +1614,7 @@ int run(int type, int w, int h, double posX, double posY, double zoom, int max,
 
   // This is the main worker loop. It is pixel-based for best load balancing.
   while (true) {
-    // #ifdef __EMSCRIPTEN_PTHREADS__
-    int i = __atomic_fetch_add(pixelAtomic, CALC_CHUNK_SIZE, __ATOMIC_RELAXED);
-    // #else
-    //     int i = *pixelAtomic;
-    //     *pixelAtomic += CALC_CHUNK_SIZE;
-    // #endif
+    int i = pixelAtomic->fetch_add(CALC_CHUNK_SIZE, std::memory_order_relaxed);
 
     const int startPixel = i;
     const int endPixel = std::min(startPixel + CALC_CHUNK_SIZE, pixels);
@@ -1620,7 +1634,9 @@ int run(int type, int w, int h, double posX, double posY, double zoom, int max,
         float *ptr = shading + t;
         float n;
 
-        // Run the function needed and also look at the darken effect
+        // Here we run the function needed and check the darken effect.
+        // Checking the wasm2wat output of fractal.wasm reveals that this is
+        // optimized into a simple jump table. Nice!
         switch (darkenEffect) {
         case 0:
           switch (absType) {
@@ -1835,24 +1851,33 @@ int run(int type, int w, int h, double posX, double posY, double zoom, int max,
 
       // This runs for every pixel to handle panning, interior and edge cases
       // correctly.
-      const float n = iters[t];
-      if (unlikely(n == -999.0f)) {
+      float n = iters[t];
+      if (n == -999.0f) {
         colors[t] = interiorColor;
       } else {
         const float l = shading[t];
-        const float final_darken = (darkenEffect == 2) ? (1.0f - l) : l;
-
-        if (unlikely(n < 1.000004f)) { // Slightly above 1 due to our log2()
-                                       // estimation beeing goofy
-          iters[t] = 1.0f;
+        const float finalDarken = (darkenEffect == 2) ? (1.0f - l) : l;
+        if (n < 1.25f) {
           int index = static_cast<int>(flowAmount);
           int indexModulo = index % paletteLen;
-          colors[t] = mix2(palette[indexModulo], palette[indexModulo + 1],
-                           flowAmount - index, renderMode, final_darken);
+          uint32_t c = mix2(palette[indexModulo], palette[indexModulo + 1],
+                            flowAmount - index, renderMode, finalDarken);
+          // Slightly above 1 due to log2() approximation
+          if (n > 1.000004f) {
+            // n * 1020 - 1020 -> 255 * (n * 4 - 4)
+            c = mix(
+                c,
+                getPalette(flog2(n) * speed1 + (n - 1.0f) * speed2 + flowAmount,
+                           palette, paletteLen, renderMode, finalDarken),
+                (n * 1020.0f) - static_cast<uint32_t>(1020));
+          } else {
+            iters[t] = 1.0f;
+          }
+          colors[t] = c;
         } else {
           colors[t] =
               getPalette(flog2(n) * speed1 + (n - 1.0f) * speed2 + flowAmount,
-                         palette, paletteLen, renderMode, final_darken);
+                         palette, paletteLen, renderMode, finalDarken);
         }
       }
     }
