@@ -858,6 +858,7 @@ document.addEventListener("touchend", () => {
 setTimeout(hideWelcome, 4000)
 
 var shadingEffect = 0
+var newShading = 0
 var fractalType = 1
 var renderMode = 0
 var pixel = 0
@@ -961,6 +962,19 @@ function update() {
     }
 
     time = performance.now()
+    if (shadingEffect !== newShading) {
+        if ((shadingEffect === 1 && newShading === 2) || (shadingEffect === 2 && newShading === 1)) {
+            requestRender()
+        } else if (newShading === 0) {
+            getMemory(pixels, dataStart + pixels * 4, -32).fill(0) // Clear shading data
+            retry()
+        } else {
+            redo()
+            clearBack()
+        }
+        shadingEffect = newShading
+    }
+
     if (unfinished || rehandle) {
         hideTime = Infinity
         originalPixel = pixel
@@ -1391,18 +1405,8 @@ function switchShadingEffect() {
 }
 
 function changeShadingEffect(newEffect) {
-    var oldEffect = shadingEffect
-    shadingEffect = newEffect
-    colorButton(3, shadingEffect / 3)
-    if ((oldEffect === 1 && shadingEffect === 2) || (oldEffect === 2 && shadingEffect === 1)) {
-        requestRender()
-    } else if (shadingEffect === 0) {
-        getMemory(pixels, dataStart + pixels * 4, -32).fill(0) // Clear shading data
-        retry()
-    } else {
-        redo()
-        clearBack()
-    }
+    newShading = newEffect
+    colorButton(3, newEffect / 3)
 }
 
 function switchAliasMode() {
