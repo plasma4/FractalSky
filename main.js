@@ -1335,6 +1335,7 @@ function customizePalette() {
 }
 
 const hexStr = "0123456789abcdef"
+const CSS_COLORS = { aliceblue: 0xfff8f0, antiquewhite: 0xd7ebfa, aqua: 0xffff00, aquamarine: 0xd4ff7f, azure: 0xfffff0, beige: 0xdcf5f5, bisque: 0xc4e4ff, black: 0x0, blanchedalmond: 0xcdebff, blue: 0xff0000, blueviolet: 0xe22b8a, brown: 0x2a2aa5, burlywood: 0x87b8de, cadetblue: 0xa09e5f, chartreuse: 0xff7f, chocolate: 0x1e69d2, coral: 0x507fff, cornflowerblue: 0xed9564, cornsilk: 0xdcf8ff, crimson: 0x3c14dc, cyan: 0xffff00, darkblue: 0x8b0000, darkcyan: 0x8b8b00, darkgoldenrod: 0xb86b8, darkgray: 0xa9a9a9, darkgreen: 0x6400, darkgrey: 0xa9a9a9, darkkhaki: 0x6bb7bd, darkmagenta: 0x8b008b, darkolivegreen: 0x2f6b55, darkorange: 0x8cff, darkorchid: 0xcc3299, darkred: 0x8b, darksalmon: 0x7a96e9, darkseagreen: 0x8fbc8f, darkslateblue: 0x8b3d48, darkslategray: 0x4f4f2f, darkslategrey: 0x4f4f2f, darkturquoise: 0xd1ce00, darkviolet: 0xd30094, deeppink: 0x9314ff, deepskyblue: 0xffbf00, dimgray: 0x696969, dodgerblue: 0xff901e, firebrick: 0x2222b2, floralwhite: 0xf0faff, forestgreen: 0x228b22, fuchsia: 0xff00ff, gainsboro: 0xdcdcdc, ghostwhite: 0xfff8f8, gold: 0xd7ff, goldenrod: 0x20a5da, gray: 0x808080, green: 0x8000, greenyellow: 0x2fffad, grey: 0x808080, honeydew: 0xf0fff0, hotpink: 0xb469ff, indianred: 0x5c5ccd, indigo: 0x82004b, ivory: 0xf0ffff, khaki: 0x8ce6f0, lavender: 0xfae6e6, lavenderblush: 0xf5f0ff, lawngreen: 0xfc7c, lemonchiffon: 0xcdfaff, lightblue: 0xe6d8ad, lightcoral: 0x8080f0, lightcyan: 0xffffe0, lightgoldenrodyellow: 0xd2fafa, lightgray: 0xd3d3d3, lightgreen: 0x90ee90, lightgrey: 0xd3d3d3, lightpink: 0xc1b6ff, lightsalmon: 0x7aa0ff, lightseagreen: 0xaab220, lightskyblue: 0xface87, lightslategray: 0x998877, lightslategrey: 0x998877, lightsteelblue: 0xdec4b0, lightyellow: 0xe0ffff, lime: 0xff00, limegreen: 0x32cd32, linen: 0xe6f0fa, magenta: 0xff00ff, maroon: 0x80, mediumaquamarine: 0xaacd66, mediumblue: 0xcd0000, mediumorchid: 0xd355ba, mediumpurple: 0xdb7093, mediumseagreen: 0x71b33c, mediumslateblue: 0xee687b, mediumspringgreen: 0x9afa00, mediumturquoise: 0xccd148, mediumvioletred: 0x8515c7, midnightblue: 0x701919, mintcream: 0xfafff5, mistyrose: 0xe1e4ff, moccasin: 0xb5e4ff, navajowhite: 0xaddeff, navy: 0x800000, oldlace: 0xe6f5fd, olive: 0x8080, olivedrab: 0x238e6b, orange: 0xa5ff, orangered: 0x45ff, orchid: 0xd670da, palegoldenrod: 0xaae8ee, palegreen: 0x98fb98, paleturquoise: 0xeeeeaf, palevioletred: 0x9370db, papayawhip: 0xd5efff, peachpuff: 0xb9daff, peru: 0x3f85cd, pink: 0xcbc0ff, plum: 0xdda0dd, powderblue: 0xe6e0b0, purple: 0x800080, rebeccapurple: 0x993366, red: 0xff, rosybrown: 0x8f8fbc, royalblue: 0xe16941, saddlebrown: 0x13458b, salmon: 0x7280fa, sandybrown: 0x60a4f4, seagreen: 0x578b2e, seashell: 0xeef5ff, sienna: 0x2d52a0, silver: 0xc0c0c0, skyblue: 0xebce87, slateblue: 0xcd5a6a, slategray: 0x908070, slategrey: 0x908070, snow: 0xfafaff, springgreen: 0x7fff00, steelblue: 0xb48246, tan: 0x8cb4d2, teal: 0x808000, thistle: 0xd8bfd8, tomato: 0x4763ff, turquoise: 0xd0e040, violet: 0xee82ee, wheat: 0xb3def5, white: 0xffffff, whitesmoke: 0xf5f5f5, yellow: 0xffff, yellowgreen: 0x32cd9a }
 function decodePalette(colors) {
     var rgbLength = colors.length
     var newColors = Array(rgbLength)
@@ -1345,14 +1346,18 @@ function decodePalette(colors) {
         var c = colors[i].trim()
         var split = c.split(",")
         if (split.length === 1) {
+            if (CSS_COLORS[c]) {
+                newColors[i] = CSS_COLORS[c]
+                continue
+            }
             var hex = null
-            if (c.charCodeAt(0) === 35) {
+            if (c.charCodeAt(0) === 35) { // "#" character
                 c = c.slice(1)
             }
             if (c.length === 6) {
                 hex = (hexStr.indexOf(c[0]) << 4) + hexStr.indexOf(c[1]) + (hexStr.indexOf(c[2]) << 12) + (hexStr.indexOf(c[3]) << 8) + (hexStr.indexOf(c[4]) << 20) + (hexStr.indexOf(c[5]) << 16)
             } else if (c.length === 3) {
-                hex = hexStr.indexOf(c[0]) * 17 + hexStr.indexOf(c[1]) * 4352 + hexStr.indexOf(c[1]) * 69632 // These may seem like magic numbers, but it's just converting #1bc, for example, into #11bbcc.
+                hex = hexStr.indexOf(c[0]) * 17 + hexStr.indexOf(c[1]) * 4352 + hexStr.indexOf(c[2]) * 1114112 // These may seem like magic numbers, but it's just converting #1bc, for example, into #11bbcc.
             }
             if (!isFinite(hex)) {
                 return false
