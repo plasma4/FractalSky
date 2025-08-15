@@ -87,7 +87,7 @@ const M1_INVERSE_LMS_TO_LINEAR_SRGB = [
  * @returns {Array<number>} The resulting 3x1 vector.
  */
 function multiplyMatrixVector(matrix, vector) {
-    const result = [0, 0, 0]
+    var result = [0, 0, 0]
     for (var i = 0; i < 3; i++) {
         for (var j = 0; j < 3; j++) {
             result[i] += matrix[i][j] * vector[j]
@@ -114,13 +114,13 @@ function srgbToOklab(srgb_packed) {
     b = b > 0.04045 ? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92
 
     // Convert linear sRGB to LMS (Long-Medium-Short) color space using M1_LINEAR_SRGB_TO_LMS
-    const lmsLinear = multiplyMatrixVector(M1_LINEAR_SRGB_TO_LMS, [r, g, b])
+    var lmsLinear = multiplyMatrixVector(M1_LINEAR_SRGB_TO_LMS, [r, g, b])
 
     // Apply cube root non-linearity to LMS
-    const lmsOklab = lmsLinear.map(val => Math.cbrt(val))
+    var lmsOklab = lmsLinear.map(val => Math.cbrt(val))
 
     // Convert LMS to Oklab (L, a, b) using M2_LMS_NON_LINEAR_TO_OKLAB
-    const oklab = multiplyMatrixVector(M2_LMS_NON_LINEAR_TO_OKLAB, lmsOklab)
+    var oklab = multiplyMatrixVector(M2_LMS_NON_LINEAR_TO_OKLAB, lmsOklab)
     return oklab
 }
 
@@ -130,15 +130,15 @@ function srgbToOklab(srgb_packed) {
  * @returns {number} The packed sRGB color number (0xRRGGBB).
  */
 function oklabToSRGB(oklab_array) {
-    const L = oklab_array[0]
-    const a = oklab_array[1]
-    const b = oklab_array[2]
+    var L = oklab_array[0]
+    var a = oklab_array[1]
+    var b = oklab_array[2]
 
     // Convert Oklab (L, a, b) to LMS (non-linear) using M2_INVERSE_OKLAB_TO_LMS_NON_LINEAR
-    const lmsOklab = multiplyMatrixVector(M2_INVERSE_OKLAB_TO_LMS_NON_LINEAR, [L, a, b])
+    var lmsOklab = multiplyMatrixVector(M2_INVERSE_OKLAB_TO_LMS_NON_LINEAR, [L, a, b])
 
     // Undo cube root non-linearity to get linear LMS
-    const lmsLinear = lmsOklab.map(val => val * val * val)
+    var lmsLinear = lmsOklab.map(val => val * val * val)
 
     // Convert linear LMS to linear sRGB using M1_INVERSE_LMS_TO_LINEAR_SRGB
     var [r_linear, g_linear, b_linear] = multiplyMatrixVector(M1_INVERSE_LMS_TO_LINEAR_SRGB, lmsLinear)
@@ -149,9 +149,9 @@ function oklabToSRGB(oklab_array) {
     b_linear = b_linear > 0.0031308 ? (1.055 * Math.pow(b_linear, 1 / 2.4) - 0.055) : 12.92 * b_linear
 
     // Clamp values to [0, 1] and convert to 0-255 integer
-    const R = Math.round(Math.max(0, Math.min(1, r_linear)) * 255)
-    const G = Math.round(Math.max(0, Math.min(1, g_linear)) * 255)
-    const B = Math.round(Math.max(0, Math.min(1, b_linear)) * 255)
+    var R = Math.round(Math.max(0, Math.min(1, r_linear)) * 255)
+    var G = Math.round(Math.max(0, Math.min(1, g_linear)) * 255)
+    var B = Math.round(Math.max(0, Math.min(1, b_linear)) * 255)
 
     // Pack into a single 32-bit number in 0xRRGGBB format
     return ((R << 16) | (G << 8) | B) ^ 0xff000000
@@ -162,9 +162,9 @@ function oklabToSRGB(oklab_array) {
  * @returns {Float32Array} A 256-element array where index is sRGB value and value is linear sRGB.
  */
 function generateSRGBLinearLUT() {
-    const lut = new Float32Array(256)
+    var lut = new Float32Array(256)
     for (var i = 0; i < 256; i++) {
-        const srgb_norm = i / 255.0
+        var srgb_norm = i / 255.0
         lut[i] = srgb_norm > 0.04045 ? Math.pow((srgb_norm + 0.055) / 1.055, 2.4) : srgb_norm / 12.92
     }
     return lut
@@ -175,9 +175,9 @@ function generateSRGBLinearLUT() {
  * @returns {Uint8Array} A 256-element array where index is linear sRGB step and value is 8-bit sRGB.
  */
 function generateLinearSRGBLUT() {
-    const lut = new Uint8Array(256)
+    var lut = new Uint8Array(256)
     for (var i = 0; i < 256; i++) {
-        const linear_norm = i / 255.0
+        var linear_norm = i / 255.0
         var srgb_val = linear_norm > 0.0031308 ? (1.055 * Math.pow(linear_norm, 1 / 2.4) - 0.055) : 12.92 * linear_norm
         lut[i] = Math.round(Math.max(0, Math.min(1, srgb_val)) * 255)
     }
@@ -197,21 +197,21 @@ function generateLinearSRGBLUT() {
  */
 function initializeColorScience(memory, highResSteps, paletteStart, shadingStart, originalPalette) {
     // Generate sRGB <-> Linear sRGB LUTs once
-    const srgbToLinearLUT = generateSRGBLinearLUT()
-    const linearToSrgbLUT = generateLinearSRGBLUT()
+    var srgbToLinearLUT = generateSRGBLinearLUT()
+    var linearToSrgbLUT = generateLinearSRGBLUT()
 
     // originalPalette.length - 1 because we interpolate between N colors, meaning N-1 segments.
     // If originalPalette has 2 colors, there's 1 segment. If it has 10 colors, there are 9 segments.
-    const originalPaletteSegments = originalPalette.length - 1
-    const finalLUTLength = originalPaletteSegments * highResSteps
-    const megaPalette = new Uint32Array(finalLUTLength)
+    var originalPaletteSegments = originalPalette.length - 1
+    var finalLUTLength = originalPaletteSegments * highResSteps
+    var megaPalette = new Uint32Array(finalLUTLength)
 
     for (var i = 0; i < originalPaletteSegments; i++) {
-        const oklab1 = srgbToOklab(originalPalette[i])
-        const oklab2 = srgbToOklab(originalPalette[i + 1])
+        var oklab1 = srgbToOklab(originalPalette[i])
+        var oklab2 = srgbToOklab(originalPalette[i + 1])
         for (var j = 0; j < highResSteps; j++) {
-            const fraction = j / (highResSteps - 1)
-            const interpolated_oklab = [
+            var fraction = j / (highResSteps - 1)
+            var interpolated_oklab = [
                 oklab1[0] * (1 - fraction) + oklab2[0] * fraction,
                 oklab1[1] * (1 - fraction) + oklab2[1] * fraction,
                 oklab1[2] * (1 - fraction) + oklab2[2] * fraction
@@ -223,18 +223,18 @@ function initializeColorScience(memory, highResSteps, paletteStart, shadingStart
     // Write the megaPalette to the shared memory buffer
     new Uint32Array(memory.buffer, paletteStart, finalLUTLength).set(megaPalette)
 
-    const numShades = 256
-    const shadingLUT = new Uint8Array(256 * numShades) // 256 original values * 256 shade amounts
+    var numShades = 256
+    var shadingLUT = new Uint8Array(256 * numShades) // 256 original values * 256 shade amounts
     for (var originalValue = 0; originalValue < 256; originalValue++) {
         // Get the linear representation of the original sRGB 8-bit value
-        const linearValue = srgbToLinearLUT[originalValue]
+        var linearValue = srgbToLinearLUT[originalValue]
         for (var shadeAmount = 0; shadeAmount < numShades; shadeAmount++) {
-            const shadeFraction = 1 - (shadeAmount / 255) // 0 (full shade) to 1 (no shade)
-            const shadedLinearValue = linearValue * shadeFraction
+            var shadeFraction = 1 - (shadeAmount / 255) // 0 (full shade) to 1 (no shade)
+            var shadedLinearValue = linearValue * shadeFraction
 
             // Convert the shaded linear value back to an 8-bit sRGB value using the LUT
             // We multiply by 255 and round to get the appropriate index for linearToSrgbLUT
-            const finalSrgbValue = linearToSrgbLUT[Math.round(Math.max(0, Math.min(1, shadedLinearValue)) * 255)]
+            var finalSrgbValue = linearToSrgbLUT[Math.round(Math.max(0, Math.min(1, shadedLinearValue)) * 255)]
 
             shadingLUT[originalValue * numShades + shadeAmount] = finalSrgbValue
         }
@@ -1481,55 +1481,53 @@ function saveLocation() {
 
 function importLocation() {
     var val = newLoc.value.trim()
-    var valA = val.indexOf("X:")
-    var valB = val.indexOf(" Y:")
-    var valC = val.indexOf(" Zoom:")
-    var valD = val.indexOf(" Type:")
-    var valE = val.indexOf(" Shading:")
-    if (valA === 0 && valB !== -1 && valC !== -1 && valD !== -1 && valE !== -1) {
-        var isJulia = false
-        var a = val.slice(valA + 2, valB).trim()
-        var b = val.slice(valB + 3, valC).trim()
-        var c = val.slice(valC + 6, valD).trim()
-        var e, f, g
-        if (a !== "" && b !== "" && c !== "") {
-            a = parseFloat(a)
-            b = parseFloat(b)
-            c = parseFloat(c)
-            var fName = val.slice(valD + 6, valE).trim()
-            if (fName.slice(-6) === " Julia") {
-                var jx = val.indexOf(" Julia X:")
-                var jy = val.indexOf(" Julia Y:")
-                e = shadingNames.indexOf(val.slice(valE + 9, jx).trim())
-                fName = fName.slice(0, fName.length - 6)
-                f = val.slice(jx + 9, jy).trim()
-                g = val.slice(jy + 9).trim()
-                if (f !== "" && g !== "") {
-                    f = parseFloat(f)
-                    g = parseFloat(g)
-                    isJulia = true
-                } else {
-                    return
-                }
-            } else {
-                e = shadingNames.indexOf(val.slice(valE + 9).trim())
+
+    var match = val.match(new RegExp(
+        /^X:\s*(?<panX>-?\d*\.?\d+)\s+Y:\s*(?<panY>-?\d*\.?\d+)\s+Zoom:\s*(?<zoom>\d*\.?\d+)\s+Type:\s*(?<fractalName>.+?)\s+(?:Julia\s)?Shading:\s*(?<shadingName>.+?)(?:\s+Julia X:\s*(?<juliaX>-?\d*\.?\d+)\s+Julia Y:\s*(?<juliaY>-?\d*\.?\d+))?$/
+    ))
+    if (!match) {
+        return
+    }
+
+    // Extract values from the named groups.
+    var groups = match.groups
+    var a = parseFloat(groups.panX)
+    var b = parseFloat(groups.panY)
+    var c = parseFloat(groups.zoom)
+    var fName = groups.fractalName
+    var sName = groups.shadingName
+    var d = fractalNames.indexOf(fName)
+    var e = shadingNames.indexOf(sName)
+    
+    let isJulia = false
+    let f = NaN, g = NaN
+
+    if (groups.juliaX != null && groups.juliaY != null) {
+        f = parseFloat(groups.juliaX)
+        g = parseFloat(groups.juliaY)
+        isJulia = true
+    }
+
+    // Do a quick validation on the parsed values
+    if (isFinite(a) && isFinite(b) && isFinite(c) && c > 0 && 
+        d !== -1 && e !== -1 && 
+        (!isJulia || (isFinite(f) && isFinite(g)))) {
+        
+        // Check if an update is actually needed before triggering a full redo.
+        if (panX !== a || panY !== b || (zoom * w) !== c || fractalType !== d || shadingEffect !== e || (isJulia && (juliaX !== f || juliaY !== g))) {
+            panX = a
+            panY = b
+            zoom = c / w
+            fractalType = d
+            shadingEffect = e
+
+            juliaMode = isJulia // Set the Julia mode
+            if (isJulia) {
+                juliaX = f
+                juliaY = g
             }
-            var d = fractalNames.indexOf(fName)
-            if (isFinite(a) && isFinite(b) && c > 0 && isFinite(c) && c <= 0.5 && d !== -1 && d >= 1 && d < fractalNames.length && e >= 0 && e < shadingNames.length && (!isJulia || (isFinite(f) && isFinite(g)))) {
-                if (panX !== a || panY !== b || zoom !== c || fractalType !== d || shadingEffect !== e) {
-                    panX = a
-                    panY = b
-                    zoom = c / w
-                    fractalType = d
-                    shadingEffect = e
-                    if (isJulia) {
-                        juliaMode = true
-                        juliaX = f
-                        juliaY = g
-                    }
-                    redo()
-                }
-            }
+            
+            redo()
         }
     }
 }
