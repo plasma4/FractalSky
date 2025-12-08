@@ -1,6 +1,6 @@
 ## FractalSky
 A fractal viewer optimized for the web. Supports a variety of features, utilizing multicore processing when possible, and functioning. It automatically falls back to a version without `SharedArrayBuffer` and uses `ServiceWorkers` to make it work offline in most HTTPS settings and browsers.
-**View online at https://fractalsky.netlify.app/** and take a look at the options with the Info button. When a new version appears you may need to do a force refresh (Ctrl/Cmd+Shift+R).
+**View online at https://plasma4.org/** and take a look at the options with the Info button. When a new version appears you may need to do a force refresh (Ctrl/Cmd+Shift+R).
 
 All code is under AGPL v3. If you're looking for how the C++ WebAssembly works and information on memory regions, check fractal.c (which you should be able to access by replacing this URL's .html with .c); to optimize it uses a lot of hardcoded memory regions. Otherwise, main.js and worker.js are the JS sections.
 

@@ -58,9 +58,7 @@ self.addEventListener("fetch", e => {
                 return networkResponse
             })
             .catch(async (err) => {
-                console.log("Service Worker: Network fetch failed for", e.request.url, "serving from cache.")
                 const cachedResponse = await caches.match(e.request)
-
                 if (cachedResponse) {
                     return cachedResponse
                 }
