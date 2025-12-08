@@ -1,13 +1,13 @@
 const CACHE_NAME = "fractalsky"
 const urlsToCache = [
-    "/",
-    "/index.html",
-    "/LICENSE",
-    "/main.js",
-    "/worker.js",
-    "/manifest.json",
-    "/fractal.wasm",
-    "/fractalUnshared.wasm"
+    "./",
+    "./index.html",
+    "./LICENSE",
+    "./main.js",
+    "./worker.js",
+    "./manifest.json",
+    "./fractal.wasm",
+    "./fractalUnshared.wasm"
 ]
 
 self.addEventListener("install", e => {
@@ -24,8 +24,8 @@ self.addEventListener("install", e => {
     )
 })
 
-self.addEventListener("activate", event => {
-    event.waitUntil(
+self.addEventListener("activate", e => {
+    e.waitUntil(
         caches.keys().then(cacheNames => {
             return Promise.all(
                 cacheNames.map(cache => {
@@ -44,7 +44,6 @@ self.addEventListener("activate", event => {
 
 
 self.addEventListener("fetch", e => {
-    // Only handle GET requests
     if (e.request.method !== "GET") {
         return
     }
@@ -54,7 +53,10 @@ self.addEventListener("fetch", e => {
             .then(async (networkResponse) => {
                 const responseClone = networkResponse.clone()
                 const cache = await caches.open(CACHE_NAME)
-                cache.put(e.request, responseClone)
+                if (networkResponse.status === 200) {
+                    cache.put(e.request, responseClone)
+                }
+
                 return networkResponse
             })
             .catch(async (err) => {
@@ -67,4 +69,4 @@ self.addEventListener("fetch", e => {
                 return Response.error()
             })
     )
-});
+})
