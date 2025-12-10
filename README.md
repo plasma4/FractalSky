@@ -1,5 +1,5 @@
 ## FractalSky
-**View online at https://plasma4.org/projects/fractalsky/**.
+**View online at https://fractalsky.netlify.app/**.
 
 A fractal viewer optimized for the web. Supports a variety of features (including shading and custom palettes), utilizing multicore when possible. It automatically falls back to a version without `SharedArrayBuffer` and uses `ServiceWorkers` to make it work offline in most HTTPS settings and browsers.
 
