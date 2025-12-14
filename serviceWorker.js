@@ -48,6 +48,11 @@ self.addEventListener("fetch", e => {
         return
     }
 
+    // Cross-origin request
+    if (!e.request.url.startsWith(self.location.origin)) {
+        return e.respondWith(fetch(e.request))
+    }
+
     e.respondWith(
         fetch(e.request)
             .then(async (networkResponse) => {
