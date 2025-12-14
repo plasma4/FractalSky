@@ -226,7 +226,8 @@ body {
     opacity: 0;
 }
 
-.choice {
+.choice,
+a {
     border-radius: 4px;
     padding: 1px;
     cursor: pointer;
@@ -236,15 +237,17 @@ body {
     font-size: inherit;
 }
 
-.choice:hover {
+.choice:hover,
+a:hover {
     color: #0644c0;
-    background-color: #b3e6f7;
+    background-color: #b3e6f7b3;
     text-decoration: underline;
 }
 
-.choice:active {
-    color: #039;
-    text-decoration: underline;
+.choice:active,
+a:active {
+    color: #062b76;
+    background-color: #b3e6f7;
 }
 
 #percent::selection {
@@ -256,11 +259,6 @@ h2,
 i {
     font-family: inherit;
     font-weight: 600;
-}
-
-a {
-    color: #2cb4f3;
-    font-size: inherit;
 }
 
 b {
