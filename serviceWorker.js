@@ -6,29 +6,38 @@ const urlsToCache = [
   "./worker.js",
   "./manifest.json",
   "./fractal.wasm",
-  "./fractalUnshared.wasm",
+  "./favicon.ico",
 ];
 
+const addHeaders = (response) => {
+  if (!response) return response;
+
+  const newHeaders = new Headers(response.headers);
+  newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
+  newHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: newHeaders,
+  });
+};
+
 self.addEventListener("install", (e) => {
+  self.skipWaiting(); // Activate immediately
   e.waitUntil(
-    caches
-      .open(CACHE_NAME)
-      .then((cache) => {
-        console.log("SW: Caching app shell");
-        return cache.addAll(urlsToCache);
-      })
-      .then(() => {
-        console.log("SW: Forcing immediate activation (skipWaiting).");
-        return self.skipWaiting();
-      })
+    caches.open(CACHE_NAME).then((cache) => {
+      console.log("SW: Pre-caching app shell");
+      return cache.addAll(urlsToCache);
+    })
   );
 });
 
 self.addEventListener("activate", (e) => {
   e.waitUntil(
-    caches
-      .keys()
-      .then((cacheNames) => {
+    Promise.all([
+      clients.claim(), // Take control of all pages immediately
+      caches.keys().then((cacheNames) => {
         return Promise.all(
           cacheNames.map((cache) => {
             if (cache !== CACHE_NAME) {
@@ -37,58 +46,42 @@ self.addEventListener("activate", (e) => {
             }
           })
         );
-      })
-      .then(() => {
-        console.log("SW: Claiming clients.");
-        return self.clients.claim();
-      })
+      }),
+    ])
   );
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data === 1) {
+    self.clients.claim();
+  }
 });
 
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") {
-    return;
-  }
-
-  if (!e.request.url.startsWith(self.location.origin)) {
-    // Return original fetch for cross-origin requests
-    return e.respondWith(fetch(e.request));
+    return e.respondWith(fetch(e.request)); // Not from this origin
   }
 
   e.respondWith(
-    fetch(e.request)
-      .then(async (networkResponse) => {
-        if (networkResponse.status !== 200) {
-          return networkResponse;
+    (async () => {
+      try {
+        const networkResponse = await fetch(e.request);
+        if (networkResponse.status === 200) {
+          const cacheCopy = networkResponse.clone();
+          const cache = await caches.open(CACHE_NAME);
+          cache.put(e.request, cacheCopy);
         }
 
-        const cacheResponse = networkResponse.clone();
-        const bodyResponse = networkResponse.clone();
+        return addHeaders(networkResponse);
 
-        // Caching step
-        const cache = await caches.open(CACHE_NAME);
-        cache.put(e.request, cacheResponse);
-
-        const newHeaders = new Headers(bodyResponse.headers);
-        newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
-        newHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
-
-        const modifiedResponse = new Response(bodyResponse.body, {
-          status: bodyResponse.status,
-          statusText: bodyResponse.statusText,
-          headers: newHeaders,
-        });
-
-        return modifiedResponse;
-      })
-      .catch(async (err) => {
-        // Network failed (offline scenario)
+      } catch (err) {
         const cachedResponse = await caches.match(e.request);
         if (cachedResponse) {
-          return cachedResponse;
+          return addHeaders(cachedResponse);
         }
 
         return Response.error();
-      })
+      }
+    })()
   );
 });
