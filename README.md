@@ -5,15 +5,16 @@ A fractal viewer optimized for the web. Supports a variety of features (includin
 
 All code is under AGPL v3. If you're looking for how the C++ WebAssembly works and information on memory regions, check fractal.c (which you should be able to access by replacing this URL's .html with .c); to optimize it uses a lot of hardcoded memory regions. Otherwise, main.js and worker.js are the JS sections.
 
-Customize the number of WebWorkers by adding `?workers=8`, changing the value as needed (ignored when `SharedArrayBuffer` is not supported).
+Customize the number of WebWorkers by adding `?workers=8`, changing the value as needed (parameter is when `SharedArrayBuffer` is not supported).
 
 TODO:
-- Decimal (fixed-point) algorithms
+- Migrate code to Zig
+- Add custom decimal (fixed-point) algorithms
 - Phong shading
 - More advanced fractal coloring techniques
 - BLA, Pertubation
 - Better welcome, help UI, and explanation
-- Videos!
+- Videos! (maybe)
 
 KNOWN ISSUES:
 - The progress line may sometimes be in the wrong location when switching tasks. This does not affect the output.
@@ -21,9 +22,9 @@ KNOWN ISSUES:
 - This fake anti-aliasing also causes image export resolutions to behave weirdly sometimes.
 
 ## Memory Documentation
-(This memory layout hasn't been fully implemented for now; some regions are unused or not finished yet.)
+(This memory layout hasn't been fully implemented for now; some regions are unused or not finished yet. Deep zoom is a feature in the future, which I might implement along with a Zig migration one day.)
 ![Memory Layout](memoryLayout.png)
-By default, the memory maximum is 16000 pages (or 1,250 MB by default). You can add the `?maxMB=4096` URL parameter if you must use more memory (or customize the number however you want).
+By default, the memory maximum is 16,000 pages (or 1,250 MB by default). You can add the `?maxMB=4096` URL parameter if you must use more memory (or customize the number however you want).
 
 ## How the algorithm works
 **(This has not been fully implemented yet!)**

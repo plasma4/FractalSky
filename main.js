@@ -15,7 +15,7 @@ if (!window.WebAssembly || !WebAssembly.instantiateStreaming) {
       ? "This is probably happening because you are accessing this site from a file."
       : "You may have disabled shared web worker technology or not setup CORS headers properly; check the console log for more info.");
   console.warn(
-    "The fractal viewer will only use a single worker, as it normally uses SharedArrayBuffer to communicate between multiple workers and to allow the WebAssembly script to work using the same memory addresses. The Cross-Origin-Opener-Policy should be set to same-origin, and the Cross-Origin-Embedder-Policy should be set to require-corp. If you can't figure out how to do so, you can try to use an online web hoster that allows you to modify headers (say, with .htaccess) or use a properly set up localhost with updated headers. Check https://github.com/plasma4/FractalSky for info on how to set this up. Normally, https://plasma4.org/projects/FractalSky/ should work."
+    "The fractal viewer will only use a single worker, as it normally uses SharedArrayBuffer to communicate between multiple workers and to allow the WebAssembly script to work using the same memory addresses. The Cross-Origin-Opener-Policy should be set to same-origin, and the Cross-Origin-Embedder-Policy should be set to require-corp. If you can't figure out how to do so, you can try to use an online web hoster that allows you to modify headers (say, with .htaccess) or use a properly set up localhost with updated headers. Check https://github.com/plasma4/FractalSky for info on how to set this up. Normally, https://plasma4.org/projects/FractalSky/ should work.",
   );
 }
 // Set the timeout so there's no trace and so it takes up the most space
@@ -23,7 +23,7 @@ setTimeout(
   console.log,
   4,
   "%cOpening the inspector could activate debugging components that can drag down the code significantly! If this does occur, reload the page after you've closed the inspector.",
-  "font-family:'Gill Sans',Calibri,Tahoma;font-weight:600;font-size:15px"
+  "font-family:'Gill Sans',Calibri,Tahoma;font-weight:600;font-size:15px",
 );
 
 const scheduleTask = (function () {
@@ -195,7 +195,7 @@ function oklabToSRGB(oklab_array) {
   // Convert linear LMS to linear sRGB using M1_INVERSE_LMS_TO_LINEAR_SRGB
   var [r_linear, g_linear, b_linear] = multiplyMatrixVector(
     M1_INVERSE_LMS_TO_LINEAR_SRGB,
-    lmsLinear
+    lmsLinear,
   );
 
   // Convert linear sRGB to sRGB (gamma correction - OETF: Opto-Electronic Transfer Function)
@@ -270,7 +270,7 @@ function initializeColorScience(
   highResSteps,
   paletteStart,
   shadingStart,
-  originalPalette
+  originalPalette,
 ) {
   // Generate sRGB <-> Linear sRGB LUTs once
   var srgbToLinearLUT = generateSRGBLinearLUT();
@@ -321,7 +321,7 @@ function initializeColorScience(
 
   // Write the shadingLUT to the shared memory buffer
   new Uint8Array(memory.buffer, shadingStart, shadingLUT.length).set(
-    shadingLUT
+    shadingLUT,
   );
 }
 
@@ -515,7 +515,7 @@ FakeWorker.prototype._postMessageFromWorker = function (data) {
 FakeWorker.prototype.setupWorker = function () {
   if (!window.WebAssembly || !WebAssembly.instantiateStreaming) {
     console.error(
-      "FakeWorker: WebAssembly is not supported, cannot instantiate WASM module."
+      "FakeWorker: WebAssembly is not supported, cannot instantiate WASM module.",
     );
   }
 
@@ -771,7 +771,7 @@ function setupWebWorkers(amount) {
     var max = urlParameters.get("maxMB") * 16;
     if (max > 4096) {
       console.warn(
-        "The maximum amount of memory possible is 4096 MB, so it has been set to that."
+        "The maximum amount of memory possible is 4096 MB, so it has been set to that.",
       );
       max = 4096;
     }
@@ -813,9 +813,9 @@ function setupWebWorkers(amount) {
           Math.max(
             Math.min(
               wantedFPS * ((workerCosts[i] + 5000) / (calculationDiff + 1)),
-              workerCosts[i] * 0.25
+              workerCosts[i] * 0.25,
             ),
-            5000
+            5000,
           );
       }
 
@@ -832,9 +832,9 @@ function setupWebWorkers(amount) {
               Math.max(
                 Math.min(
                   wantedFPS * ((workerCosts[t] + 5000) / (calculationDiff + 1)),
-                  workerCosts[t] * 0.25
+                  workerCosts[t] * 0.25,
                 ),
-                5000
+                5000,
               );
           }
         }
@@ -852,7 +852,7 @@ function setupWebWorkers(amount) {
           workerResults.fill(null);
 
           var progressValues = finalResultsThisPass.filter(
-            (val) => val !== -1 && val != null
+            (val) => val !== -1 && val != null,
           );
           highestProgress =
             progressValues.length > 0 ? Math.max(...progressValues) : -1;
@@ -864,7 +864,7 @@ function setupWebWorkers(amount) {
           unfinished = pixel !== -1;
 
           if (!useSharedWebWorkers) {
-            // yield since on main thread
+            // yield since on a single main thread
             requestAnimationFrame(() => {
               completeRender();
               setTimeout(update, 0);
@@ -1076,13 +1076,13 @@ document.addEventListener(
         (touches[0].clientX + touches[1].clientX) *
           0.5 *
           devicePixelRatio *
-          quality
+          quality,
       );
       currentY = Math.round(
         (touches[0].clientY + touches[1].clientY) *
           0.5 *
           devicePixelRatio *
-          quality
+          quality,
       );
       var xPinch = touches[0].clientX - touches[1].clientX;
       var yPinch = touches[0].clientY - touches[1].clientY;
@@ -1102,7 +1102,7 @@ document.addEventListener(
   },
   {
     passive: false,
-  }
+  },
 );
 
 document.addEventListener(
@@ -1138,7 +1138,7 @@ document.addEventListener(
   },
   {
     passive: false,
-  }
+  },
 );
 
 document.addEventListener("touchend", () => {
@@ -1199,21 +1199,21 @@ function update() {
         (iters == null || iters == 0
           ? "Not calculated yet"
           : iters === -999
-          ? "Doesn't escape"
-          : iters.toFixed(3)) +
+            ? "At least " + iterations
+            : iters.toFixed(3)) +
         "\r\nPalette location: " +
         (iters === -999
           ? "Interior"
           : iters === 1
-          ? flowAmount % paletteLen
-          : iters === 0
-          ? "Not calculated yet"
-          : (
-              (Math.log2(iters) * Math.sqrt(Math.sqrt(speed)) +
-                (iters - 1) * 0.035 * speed +
-                flowAmount) %
-              paletteLen
-            ).toFixed(3)) +
+            ? flowAmount % paletteLen
+            : iters === 0
+              ? "Not calculated yet"
+              : (
+                  (Math.log2(iters) * Math.sqrt(Math.sqrt(speed)) +
+                    (iters - 1) * 0.035 * speed +
+                    flowAmount) %
+                  paletteLen
+                ).toFixed(3)) +
         "\r\nRGB color: " +
         (colorBytes[4 * p + 3] === 0
           ? "Transparent"
@@ -1264,7 +1264,7 @@ function update() {
         // Get a view of the source row to copy
         var rowToCopy = iterationSource.subarray(
           sourceRowStart,
-          sourceRowStart + copyWidth
+          sourceRowStart + copyWidth,
         );
         // Set it in the correct place in the destination
         iterationDest.set(rowToCopy, destRowStart);
@@ -1279,7 +1279,7 @@ function update() {
           var destRowStart = (destY + y) * w + destX;
           var rowToCopy = shadingSource.subarray(
             sourceRowStart,
-            sourceRowStart + copyWidth
+            sourceRowStart + copyWidth,
           );
           shadingDest.set(rowToCopy, destRowStart);
         }
@@ -1639,12 +1639,12 @@ document.addEventListener(
           ? Math.pow(1.1, Math.sign(scrollAmount))
           : Math.pow(
               scrollMultiplier,
-              Math.pow(Math.abs(scrollAmount), 0.7) * Math.sign(scrollAmount)
+              Math.pow(Math.abs(scrollAmount), 0.7) * Math.sign(scrollAmount),
             );
       updateZoom(s, currentX, currentY);
     }
   },
-  { passive: false }
+  { passive: false },
 );
 
 function updateZoom(factor, x, y) {
@@ -1710,13 +1710,13 @@ function resetLocation() {
     (fractalType === 1 || fractalType === 10 || fractalType === 14
       ? 0.75
       : fractalType === 7 ||
-        fractalType === 11 ||
-        fractalType === 12 ||
-        fractalType === 13
-      ? 0.5
-      : fractalType === 8
-      ? 0.2
-      : 0);
+          fractalType === 11 ||
+          fractalType === 12 ||
+          fractalType === 13
+        ? 0.5
+        : fractalType === 8
+          ? 0.2
+          : 0);
   panY =
     (-h * 0.5 - 0.5) * zoom +
     1e-5 +
@@ -2025,12 +2025,12 @@ function switchAliasMode() {
     quality === 1
       ? 1.1
       : quality === 1.1
-      ? 1.25
-      : quality === 1.25
-      ? 2
-      : quality === 2
-      ? 0.5
-      : 1;
+        ? 1.25
+        : quality === 1.25
+          ? 2
+          : quality === 2
+            ? 0.5
+            : 1;
   zoom *= oldAlias / quality;
   needResize = 2;
   colorButton(4, quality * 3 - 3);
@@ -2075,7 +2075,7 @@ function switchCategory() {
 function setIterations(amount) {
   iterations = amount;
   rehandle = true;
-  colorButton(11, Math.log10(iterations) * 0.25);
+  colorButton(11, Math.log10(iterations) - 3);
 }
 
 function saveLocation() {
@@ -2117,8 +2117,8 @@ function importLocation() {
 
   var match = val.match(
     new RegExp(
-      /^X:\s*(?<panX>-?\d*\.?\d+)\s+Y:\s*(?<panY>-?\d*\.?\d+)\s+Zoom:\s*(?<zoom>\d*\.?\d+)\s+Type:\s*(?<fractalName>.+?)\s+(?:Julia\s)?Shading:\s*(?<shadingName>.+?)(?:\s+Julia X:\s*(?<juliaX>-?\d*\.?\d+)\s+Julia Y:\s*(?<juliaY>-?\d*\.?\d+))?$/
-    )
+      /^X:\s*(?<panX>-?\d*\.?\d+)\s+Y:\s*(?<panY>-?\d*\.?\d+)\s+Zoom:\s*(?<zoom>\d*\.?\d+)\s+Type:\s*(?<fractalName>.+?)\s+(?:Julia\s)?Shading:\s*(?<shadingName>.+?)(?:\s+Julia X:\s*(?<juliaX>-?\d*\.?\d+)\s+Julia Y:\s*(?<juliaY>-?\d*\.?\d+))?$/,
+    ),
   );
   if (!match) {
     return;
@@ -2219,7 +2219,7 @@ function completeResize() {
     updateZoom(
       Math.pow((resizeW * resizeW + resizeH * resizeH) / (w * w + h * h), 0.8),
       w * 0.5,
-      h * 0.5
+      h * 0.5,
     );
   }
   needResize = false;
@@ -2265,6 +2265,7 @@ function reset() {
   speed = 1;
   colorButton(8, 0.5);
   colorButton(9, 0.5);
+  colorButton(11, Math.log10(iterations) - 3);
   if (juliaMode) {
     juliaX = 0;
     juliaY = 0;
@@ -2297,5 +2298,5 @@ colorButton(5, flowRate / 6 + 0.5);
 colorButton(6, -flowRate / 6 + 0.5);
 colorButton(8, 0.5);
 colorButton(9, 0.5);
-colorButton(11, Math.log10(iterations) * 0.25);
+colorButton(11, Math.log10(iterations) - 3);
 colorButton(12, pixelBreakdown);
