@@ -2117,7 +2117,7 @@ function importLocation() {
 
   var match = val.match(
     new RegExp(
-      /^X:\s*(?<panX>-?\d*\.?\d+)\s+Y:\s*(?<panY>-?\d*\.?\d+)\s+Zoom:\s*(?<zoom>\d*\.?\d+)\s+Type:\s*(?<fractalName>.+?)\s+(?:Julia\s)?Shading:\s*(?<shadingName>.+?)(?:\s+Julia X:\s*(?<juliaX>-?\d*\.?\d+)\s+Julia Y:\s*(?<juliaY>-?\d*\.?\d+))?$/,
+      /^X:\s*(?<panX>-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s+Y:\s*(?<panY>-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s+Zoom:\s*(?<zoom>\d*\.?\d+(?:[eE][+-]?\d+)?)\s+Type:\s*(?<fractalName>.+?)\s+(?:Julia\s)?Shading:\s*(?<shadingName>.+?)(?:\s+Julia X:\s*(?<juliaX>-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s+Julia Y:\s*(?<juliaY>-?\d*\.?\d+(?:[eE][+-]?\d+)?))?$/,
     ),
   );
   if (!match) {
