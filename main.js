@@ -2064,11 +2064,11 @@ function decreaseSpeed() {
 
 function switchCategory() {
   if (fractalType < 7) {
-    changeFractal(6);
+    changeFractal(7);
   } else if (fractalType < 10) {
-    changeFractal(9);
+    changeFractal(10);
   } else {
-    changeFractal(0);
+    changeFractal(1);
   }
 }
 
