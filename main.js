@@ -260,9 +260,9 @@ function generateLinearSRGBLUT() {
  * and a shading lookup table for applying shade amounts to sRGB colors.
  *
  * @param {ArrayBuffer} memory An object containing an ArrayBuffer.
- * @param {number} paletteStart The byte offset in `memory.buffer` where the mega-palette should be written.
- * @param {number} shadingStart The byte offset in `memory.buffer` where the shading LUT should be written.
- * @param {Array<number>} originalPalette An array of packed sRGB numbers (0xRRGGBB) representing the base palette.
+ * @param {number} paletteStart The byte offset in memory.buffer where the mega-palette should be written.
+ * @param {number} shadingStart The byte offset in memory.buffer where the shading LUT should be written.
+ * @param {Array<number>} originalPalette An array of packed sRGB numbers (0xRRGGBB format) representing the base palette.
  * @returns {{megaPaletteSize: number}} An object containing the size of the generated mega-palette.
  */
 function initializeColorScience(
@@ -356,7 +356,7 @@ const line = document.getElementById("line");
 const sheet = document.getElementById("sheet");
 const select = document.getElementById("select");
 const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d", { willReadFrequently: false }); // Some browsers are stinky and get mad after several fast getImageData calls which happen on resize. (Although this doesn't seem to do anything.)
+const ctx = canvas.getContext("2d", { willReadFrequently: false });
 const previous = document.getElementById("previous");
 const ctx2 = previous.getContext("2d");
 const hidden = document.createElement("canvas");
@@ -444,8 +444,8 @@ function updateProgressLine(currentPixel) {
 }
 
 /**
- * This simulates a Web Worker's API when SharedArrayBuffer is not available.
- * It runs WebAssembly operations directly in the main thread.
+ * Simulates a Web Worker's API when SharedArrayBuffer is not available.
+ * Runs WebAssembly operations directly in the main thread.
  */
 function FakeWorker() {
   this.workerID = -1;
@@ -732,6 +732,8 @@ var flowRate = 0,
 var resizeW, resizeH;
 
 var imageData, imageDataBuffer;
+var outputVersion = 0;
+var uploadedOutputVersion = -1;
 
 // To ensure that the site works properly, make sure this value is a multiple of 8 if you want to change it.
 const paletteStart = 65536 + 32; // Atomic counter, limb counter, job ID, palette data, then a blank for SIMD alignment
@@ -825,6 +827,10 @@ function setupWebWorkers(amount) {
         calculationDiff = Math.max(newTime - time, 1);
         time = newTime;
 
+        // Every completed worker pass produces a new color buffer.
+        // This lets the display upload be memoized when multiple paths request the same output during one frame!
+        outputVersion++;
+
         if (workerResults.some((res) => res != null && res !== -1)) {
           for (let t = 0; t < workerCount; t++) {
             workerCosts[t] =
@@ -846,7 +852,8 @@ function setupWebWorkers(amount) {
             completeRender(true);
           });
         } else {
-          updateOutputImage();
+          // Commit before update() can dispatch the next pass
+          flushOutputImage();
           lastOutput = performance.now();
           var finalResultsThisPass = workerResults.slice(0);
           workerResults.fill(null);
@@ -978,10 +985,10 @@ function resizeHandler() {
   //     return
   // }
 
+  invalidateOutputImage();
+
   w = Math.round(innerWidth * devicePixelRatio * quality);
   h = Math.round(innerHeight * devicePixelRatio * quality);
-  imageData = ctx.getImageData(0, 0, w, h);
-  imageDataBuffer = imageData.data;
   pixels = w * h;
   canvas.width = previous.width = hidden.width = w;
   canvas.height = previous.height = hidden.height = h;
@@ -1005,6 +1012,30 @@ function resizeHandler() {
   colorBytes = getMemory(pixels * 4, colorDataStart, -8); // In the WebAssembly script, it actually is 32-bit, but for getting this to render to the canvas, we pretend it's 8-bit and it works out.
   colorArray = getMemory(pixels, colorDataStart, 32);
   dataBits = getMemory((wasmLength - dataStart) * 0.25, dataStart, 32);
+
+  // A shared WASM buffer can be written by the next worker pass as soon as putImageData() returns.
+  // That's what this stable snapshot is for!
+  var sharedColorBuffer =
+    typeof SharedArrayBuffer !== "undefined" &&
+    colorBytes.buffer instanceof SharedArrayBuffer;
+  if (!sharedColorBuffer) {
+    // Avoid copying the entire WASM color buffer when the browser accepts a regular typed-array-backed ImageData.
+    try {
+      imageData = new ImageData(colorBytes, w, h);
+      imageDataBuffer =
+        imageData.data.buffer === colorBytes.buffer &&
+        imageData.data.byteOffset === colorBytes.byteOffset &&
+        imageData.data.byteLength === colorBytes.byteLength
+          ? null
+          : imageData.data;
+    } catch (e) {
+      imageData = ctx.createImageData(w, h);
+      imageDataBuffer = imageData.data;
+    }
+  } else {
+    imageData = ctx.createImageData(w, h);
+    imageDataBuffer = imageData.data;
+  }
 }
 
 function expandMemory(finalByte) {
@@ -1179,6 +1210,60 @@ var originalPixel = 0;
 var diffX = 0;
 var diffY = 0;
 
+// Move one plane of the pixel data in place. copyWithin() handles horizontal
+// overlap, while the row direction handles vertical overlap. The old code
+// allocated and zeroed a pixels * 2 Float32Array on every pan update.
+function shiftDataPlane(planeOffset, shiftX, shiftY) {
+  var absX = Math.abs(shiftX);
+  var absY = Math.abs(shiftY);
+  var copyWidth = w - absX;
+  var copyHeight = h - absY;
+  var planeEnd = planeOffset + pixels;
+
+  if (copyWidth <= 0 || copyHeight <= 0) {
+    dataArray.fill(0, planeOffset, planeEnd);
+    return;
+  }
+
+  var sourceX = shiftX > 0 ? 0 : absX;
+  var destX = shiftX > 0 ? absX : 0;
+  var sourceY = shiftY > 0 ? 0 : absY;
+  var destY = shiftY > 0 ? absY : 0;
+  var rowStep = shiftY > 0 ? -1 : 1;
+  var row = shiftY > 0 ? copyHeight - 1 : 0;
+  var rowLimit = shiftY > 0 ? -1 : copyHeight;
+
+  for (; row !== rowLimit; row += rowStep) {
+    var sourceRowStart = planeOffset + (sourceY + row) * w + sourceX;
+    var destRowStart = planeOffset + (destY + row) * w + destX;
+    dataArray.copyWithin(
+      destRowStart,
+      sourceRowStart,
+      sourceRowStart + copyWidth,
+    );
+  }
+
+  // clear the newly exposed horizontal edge
+  if (shiftX > 0) {
+    for (var y = 0; y < h; y++) {
+      var rowStart = planeOffset + y * w;
+      dataArray.fill(0, rowStart, rowStart + absX);
+    }
+  } else if (shiftX < 0) {
+    for (var y = 0; y < h; y++) {
+      var rowStart = planeOffset + y * w;
+      dataArray.fill(0, rowStart + copyWidth, rowStart + w);
+    }
+  }
+
+  // clear the newly exposed vertical edge
+  if (shiftY > 0) {
+    dataArray.fill(0, planeOffset, planeOffset + absY * w);
+  } else if (shiftY < 0) {
+    dataArray.fill(0, planeOffset + copyHeight * w, planeEnd);
+  }
+}
+
 function update() {
   if (needResize) {
     completeResize();
@@ -1242,51 +1327,12 @@ function update() {
     panX -= diffX * zoom;
     panY -= diffY * zoom;
 
-    // A fresh buffer to hold the shifted data
-    var newData = new Float32Array(pixels * 2);
-
-    // Calculate the dimensions and position of the overlapping rectangle
-    var sourceX = diffX > 0 ? 0 : -diffX;
-    var destX = diffX > 0 ? diffX : 0;
-    var copyWidth = w - Math.abs(diffX);
-
-    var sourceY = diffY > 0 ? 0 : -diffY;
-    var destY = diffY > 0 ? diffY : 0;
-    var copyHeight = h - Math.abs(diffY);
-
-    if (copyWidth > 0 && copyHeight > 0) {
-      var iterationSource = dataArray.subarray(0, pixels);
-      var iterationDest = newData.subarray(0, pixels);
-
-      for (let y = 0; y < copyHeight; y++) {
-        var sourceRowStart = (sourceY + y) * w + sourceX;
-        var destRowStart = (destY + y) * w + destX;
-        // Get a view of the source row to copy
-        var rowToCopy = iterationSource.subarray(
-          sourceRowStart,
-          sourceRowStart + copyWidth,
-        );
-        // Set it in the correct place in the destination
-        iterationDest.set(rowToCopy, destRowStart);
-      }
-
-      if (shadingEffect !== 0) {
-        var shadingSource = dataArray.subarray(pixels);
-        var shadingDest = newData.subarray(pixels);
-
-        for (let y = 0; y < copyHeight; y++) {
-          var sourceRowStart = (sourceY + y) * w + sourceX;
-          var destRowStart = (destY + y) * w + destX;
-          var rowToCopy = shadingSource.subarray(
-            sourceRowStart,
-            sourceRowStart + copyWidth,
-          );
-          shadingDest.set(rowToCopy, destRowStart);
-        }
-      }
+    shiftDataPlane(0, diffX, diffY);
+    if (shadingEffect !== 0) {
+      shiftDataPlane(pixels, diffX, diffY);
+    } else {
+      dataArray.fill(0, pixels, pixels * 2);
     }
-
-    dataArray.set(newData);
     unfinished = true;
     rerender = true;
     diffX = 0;
@@ -1321,6 +1367,7 @@ function update() {
       rerender = false;
     } else if (rerender) {
       // Instead of instantly resetting the pixel, it's important to let all the workers finish their tasks to prevent desyncs.
+      flushOutputImage();
       setPixel(0);
       colorArray.fill(0);
       rerender = false;
@@ -1409,7 +1456,7 @@ function completeRender(animatedMode) {
     if (animatedMode === true || time - lastOutput > 12) {
       // To prevent rapid laggy rerenders, make sure it's been over 12ms since the last render.
       lastOutput = time;
-      updateOutputImage();
+      flushOutputImage();
     }
     var mainDiff = Math.max(time - mainTime, 1);
     if (unfinished) {
@@ -1485,7 +1532,7 @@ function completeRender(animatedMode) {
       frames = 0;
     }
   } else if (pixel === -1) {
-    updateOutputImage();
+    flushOutputImage();
     line.removeAttribute("style");
   }
 }
@@ -1594,9 +1641,26 @@ function setPixel(num) {
   pixel = pixelItem[0] = num;
 }
 
-function updateOutputImage() {
-  imageDataBuffer.set(colorBytes);
+function invalidateOutputImage() {
+  uploadedOutputVersion = -1;
+}
+
+function drawOutputImage() {
+  if (!imageData || !colorBytes || uploadedOutputVersion === outputVersion) {
+    return;
+  }
+
+  // Shared workers and browser fallbacks use a stable snapshot.
+  // The direct ImageData path is used only when the WASM buffer cannot change concurrently.
+  if (imageDataBuffer) {
+    imageDataBuffer.set(colorBytes);
+  }
   ctx.putImageData(imageData, 0, 0);
+  uploadedOutputVersion = outputVersion;
+}
+
+function flushOutputImage() {
+  drawOutputImage();
 }
 
 document.addEventListener("mousemove", function (e) {
@@ -1662,6 +1726,7 @@ function updateZoom(factor, x, y) {
       zoomM = factor;
       zx = x;
       zy = y;
+      flushOutputImage();
       ctx3.clearRect(0, 0, w, h);
       // This is faster than using putImageData(), so...we do it.
       ctx3.drawImage(canvas, 0, 0);
@@ -2246,6 +2311,7 @@ function makeIntoJulia() {
 }
 
 function download() {
+  flushOutputImage();
   var a = document.createElement("a");
   a.download = "fractal.png";
   a.href = canvas.toDataURL("image/png", 1);
